@@ -8,7 +8,9 @@ import (
 
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/dshills/gocontext-mcp/internal/embedder"
 	"github.com/dshills/gocontext-mcp/internal/indexer"
+	"github.com/dshills/gocontext-mcp/internal/searcher"
 	"github.com/dshills/gocontext-mcp/internal/storage"
 )
 
@@ -23,9 +25,10 @@ const (
 
 // Server wraps the MCP server with application dependencies
 type Server struct {
-	mcp     *server.MCPServer
-	storage storage.Storage
-	indexer *indexer.Indexer
+	mcp      *server.MCPServer
+	storage  storage.Storage
+	indexer  *indexer.Indexer
+	searcher *searcher.Searcher
 }
 
 // NewServer creates a new MCP server instance
@@ -54,8 +57,17 @@ func NewServer(dbPath string) (*Server, error) {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}
 
+	// Create embedder
+	emb, err := embedder.NewFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize embedder: %w", err)
+	}
+
 	// Create indexer
 	idx := indexer.New(store)
+
+	// Create searcher
+	srch := searcher.NewSearcher(store, emb)
 
 	// Create MCP server
 	mcpServer := server.NewMCPServer(
@@ -64,9 +76,10 @@ func NewServer(dbPath string) (*Server, error) {
 	)
 
 	s := &Server{
-		mcp:     mcpServer,
-		storage: store,
-		indexer: idx,
+		mcp:      mcpServer,
+		storage:  store,
+		indexer:  idx,
+		searcher: srch,
 	}
 
 	// Register tools

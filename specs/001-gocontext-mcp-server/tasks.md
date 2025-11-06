@@ -47,50 +47,50 @@ Legend:
 
 ### Shared Types (pkg/types/)
 
-- [ ] T013 [P] [US1] Create Symbol type in pkg/types/symbol.go with fields: Name, Kind, Package, Signature, DocComment, Scope, Receiver, Position, DDD flags
-- [ ] T014 [P] [US1] Create Chunk type in pkg/types/chunk.go with fields: ID, FileID, SymbolID, Content, ContentHash, TokenCount, StartLine, EndLine, ContextBefore, ContextAfter, ChunkType
-- [ ] T015 [P] [US2] Create SearchResult type in pkg/types/result.go with fields: ChunkID, Rank, RelevanceScore, Symbol, File, Content, Context
-- [ ] T016 [P] [US1] Create ParseResult type in pkg/types/parser.go with fields: Symbols, Imports, PackageName, Errors
-- [ ] T017 [P] [US1] Add validation methods to Symbol type (ValidateKind, ValidateScope, IsExported)
-- [ ] T018 [P] [US1] Add validation methods to Chunk type (ValidateContent, ComputeTokenCount)
+- [X] T013 [P] [US1] Create Symbol type in pkg/types/symbol.go with fields: Name, Kind, Package, Signature, DocComment, Scope, Receiver, Position, DDD flags
+- [X] T014 [P] [US1] Create Chunk type in pkg/types/chunk.go with fields: ID, FileID, SymbolID, Content, ContentHash, TokenCount, StartLine, EndLine, ContextBefore, ContextAfter, ChunkType
+- [X] T015 [P] [US2] Create SearchResult type in pkg/types/result.go with fields: ChunkID, Rank, RelevanceScore, Symbol, File, Content, Context
+- [X] T016 [P] [US1] Create ParseResult type in pkg/types/parser.go with fields: Symbols, Imports, PackageName, Errors
+- [X] T017 [P] [US1] Add validation methods to Symbol type (ValidateKind, ValidateScope, IsExported)
+- [X] T018 [P] [US1] Add validation methods to Chunk type (ValidateContent, ComputeTokenCount)
 
 ### Storage Interface (internal/storage/)
 
-- [ ] T019 [P] [US1] Define Storage interface in internal/storage/storage.go with methods: CreateProject, GetProject, UpsertFile, GetFile, UpsertSymbol, UpsertChunk, GetChunk, UpsertEmbedding, GetEmbedding, SearchVector, SearchText, GetStatus
-- [ ] T020 [P] [US1] Create SQLite implementation stub in internal/storage/sqlite.go implementing Storage interface
-- [ ] T021 [P] [US1] Implement database migrations in internal/storage/migrations.go with schema version 1.0.0
-- [ ] T022 [P] [US1] Create migration SQL for projects table per data-model.md schema
-- [ ] T023 [P] [US1] Create migration SQL for files table per data-model.md schema
-- [ ] T024 [P] [US1] Create migration SQL for symbols table per data-model.md schema
-- [ ] T025 [P] [US1] Create migration SQL for chunks table per data-model.md schema
-- [ ] T026 [P] [US2] Create migration SQL for embeddings table per data-model.md schema
-- [ ] T027 [P] [US1] Create migration SQL for imports table per data-model.md schema
-- [ ] T028 [P] [US2] Create migration SQL for search_queries table (cache) per data-model.md schema
-- [ ] T029 [P] [US1] Create FTS5 virtual table for symbols_fts in migrations
-- [ ] T030 [P] [US2] Create FTS5 virtual table for chunks_fts in migrations
-- [ ] T031 [P] [US1] Implement database initialization with WAL mode and journal mode settings
-- [ ] T032 [P] [US1] Add connection pooling configuration (1 writer, N readers)
-- [ ] T033 [P] [US1] Write unit tests for migrations (up/down, idempotency)
+- [X] T019 [P] [US1] Define Storage interface in internal/storage/storage.go with methods: CreateProject, GetProject, UpsertFile, GetFile, UpsertSymbol, UpsertChunk, GetChunk, UpsertEmbedding, GetEmbedding, SearchVector, SearchText, GetStatus
+- [X] T020 [P] [US1] Create SQLite implementation stub in internal/storage/sqlite.go implementing Storage interface
+- [X] T021 [P] [US1] Implement database migrations in internal/storage/migrations.go with schema version 1.0.0
+- [X] T022 [P] [US1] Create migration SQL for projects table per data-model.md schema
+- [X] T023 [P] [US1] Create migration SQL for files table per data-model.md schema
+- [X] T024 [P] [US1] Create migration SQL for symbols table per data-model.md schema
+- [X] T025 [P] [US1] Create migration SQL for chunks table per data-model.md schema
+- [X] T026 [P] [US2] Create migration SQL for embeddings table per data-model.md schema
+- [X] T027 [P] [US1] Create migration SQL for imports table per data-model.md schema
+- [X] T028 [P] [US2] Create migration SQL for search_queries table (cache) per data-model.md schema
+- [X] T029 [P] [US1] Create FTS5 virtual table for symbols_fts in migrations
+- [X] T030 [P] [US2] Create FTS5 virtual table for chunks_fts in migrations
+- [X] T031 [P] [US1] Implement database initialization with WAL mode and journal mode settings
+- [X] T032 [P] [US1] Add connection pooling configuration (1 writer, N readers)
+- [X] T033 [P] [US1] Write unit tests for migrations (up/down, idempotency)
 
 ### MCP Server Skeleton (internal/mcp/)
 
-- [ ] T034 [P] [US3] Create MCP server initialization in internal/mcp/server.go using github.com/mark3labs/mcp-go
-- [ ] T035 [P] [US3] Implement stdio transport configuration for MCP server
-- [ ] T036 [P] [US3] Define tool schemas in internal/mcp/schemas.go for index_codebase, search_code, get_status per contracts/mcp-tools.md
-- [ ] T037 [P] [US3] Create tool handler stubs in internal/mcp/tools.go (empty implementations returning errors)
-- [ ] T038 [P] [US3] Implement initialize method handler returning server info (name: gocontext-mcp, version: 1.0.0)
-- [ ] T039 [P] [US3] Implement tools/list method handler returning tool definitions
-- [ ] T040 [P] [US3] Add input validation helper functions for tool parameters
-- [ ] T041 [P] [US3] Add error response helper functions with MCP error codes (-32602, -32603, -32001, etc.)
-- [ ] T042 [P] [US3] Write unit tests for tool schema validation
+- [X] T034 [P] [US3] Create MCP server initialization in internal/mcp/server.go using github.com/mark3labs/mcp-go
+- [X] T035 [P] [US3] Implement stdio transport configuration for MCP server
+- [X] T036 [P] [US3] Define tool schemas in internal/mcp/schemas.go for index_codebase, search_code, get_status per contracts/mcp-tools.md
+- [X] T037 [P] [US3] Create tool handler stubs in internal/mcp/tools.go (empty implementations returning errors)
+- [X] T038 [P] [US3] Implement initialize method handler returning server info (name: gocontext-mcp, version: 1.0.0)
+- [X] T039 [P] [US3] Implement tools/list method handler returning tool definitions
+- [X] T040 [P] [US3] Add input validation helper functions for tool parameters
+- [X] T041 [P] [US3] Add error response helper functions with MCP error codes (-32602, -32603, -32001, etc.)
+- [X] T042 [P] [US3] Write unit tests for tool schema validation
 
 ### Main Entry Point
 
-- [ ] T043 [P] Create main.go in cmd/gocontext/ with serve command
-- [ ] T044 [P] Initialize MCP server and start stdio transport in main.go
-- [ ] T045 [P] Add graceful shutdown handling (SIGINT, SIGTERM)
-- [ ] T046 [P] Add version flag (--version) displaying version and build info
-- [ ] T047 [P] Verify server starts and responds to MCP initialize method
+- [X] T043 [P] Create main.go in cmd/gocontext/ with serve command
+- [X] T044 [P] Initialize MCP server and start stdio transport in main.go
+- [X] T045 [P] Add graceful shutdown handling (SIGINT, SIGTERM)
+- [X] T046 [P] Add version flag (--version) displaying version and build info
+- [X] T047 [P] Verify server starts and responds to MCP initialize method
 
 ## Phase 3: User Story 1 - Index Go Codebase (P1 - MVP)
 
@@ -253,16 +253,16 @@ Legend:
 
 ### MCP Tool: search_code
 
-- [ ] T169 [US2] Implement search_code handler in internal/mcp/tools.go
-- [ ] T170 [US2] Validate path and query parameters
-- [ ] T171 [US2] Parse optional parameters: limit, filters, search_mode
-- [ ] T172 [US2] Validate limit (1-100 range)
-- [ ] T173 [US2] Validate filter values (symbol_types enum, ddd_patterns enum)
-- [ ] T174 [US2] Sanitize query for SQL FTS (prevent injection)
-- [ ] T175 [US2] Call Searcher.Search with validated parameters
-- [ ] T176 [US2] Format results per contracts/mcp-tools.md schema with symbol, file, content, context
-- [ ] T177 [US2] Return statistics: total_results, returned_results, search_duration_ms, cache_hit
-- [ ] T178 [US2] Return error responses (-32003 for not indexed, -32004 for empty query)
+- [X] T169 [US2] Implement search_code handler in internal/mcp/tools.go
+- [X] T170 [US2] Validate path and query parameters
+- [X] T171 [US2] Parse optional parameters: limit, filters, search_mode
+- [X] T172 [US2] Validate limit (1-100 range)
+- [X] T173 [US2] Validate filter values (symbol_types enum, ddd_patterns enum)
+- [X] T174 [US2] Sanitize query for SQL FTS (prevent injection)
+- [X] T175 [US2] Call Searcher.Search with validated parameters
+- [X] T176 [US2] Format results per contracts/mcp-tools.md schema with symbol, file, content, context
+- [X] T177 [US2] Return statistics: total_results, returned_results, search_duration_ms, cache_hit
+- [X] T178 [US2] Return error responses (-32003 for not indexed, -32004 for empty query)
 - [ ] T179 [US2] Write integration tests for search_code tool in tests/integration/mcp_test.go
 - [ ] T180 [US2] Test semantic queries ("authentication logic")
 - [ ] T181 [US2] Test keyword queries ("func ParseFile")
