@@ -49,9 +49,8 @@ func (m *MockEmbedder) GenerateEmbedding(ctx context.Context, req embedder.Embed
 	for _, v := range vector {
 		sum += v * v
 	}
-	magnitude := float32(1.0)
 	if sum > 0 {
-		magnitude = float32(1.0) / float32(sum)
+		magnitude := float32(1.0) / float32(sum)
 		for i := range vector {
 			vector[i] *= magnitude
 		}

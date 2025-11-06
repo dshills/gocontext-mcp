@@ -47,22 +47,22 @@ Download the latest release for your platform:
 
 ```bash
 # macOS (Apple Silicon)
-curl -L https://github.com/yourorg/gocontext/releases/latest/download/gocontext-darwin-arm64 -o gocontext
+curl -L https://github.com/dshills/gocontext-mcp/releases/latest/download/gocontext-darwin-arm64 -o gocontext
 chmod +x gocontext
 sudo mv gocontext /usr/local/bin/
 
 # macOS (Intel)
-curl -L https://github.com/yourorg/gocontext/releases/latest/download/gocontext-darwin-amd64 -o gocontext
+curl -L https://github.com/dshills/gocontext-mcp/releases/latest/download/gocontext-darwin-amd64 -o gocontext
 chmod +x gocontext
 sudo mv gocontext /usr/local/bin/
 
 # Linux
-curl -L https://github.com/yourorg/gocontext/releases/latest/download/gocontext-linux-amd64 -o gocontext
+curl -L https://github.com/dshills/gocontext-mcp/releases/latest/download/gocontext-linux-amd64 -o gocontext
 chmod +x gocontext
 sudo mv gocontext /usr/local/bin/
 
 # Windows (PowerShell)
-Invoke-WebRequest -Uri "https://github.com/yourorg/gocontext/releases/latest/download/gocontext-windows-amd64.exe" -OutFile "gocontext.exe"
+Invoke-WebRequest -Uri "https://github.com/dshills/gocontext-mcp/releases/latest/download/gocontext-windows-amd64.exe" -OutFile "gocontext.exe"
 # Move to PATH location
 ```
 
@@ -78,7 +78,7 @@ Requires Go 1.21+ and C compiler (for CGO build with vector extension):
 
 ```bash
 # Clone repository
-git clone https://github.com/yourorg/gocontext.git
+git clone https://github.com/dshills/gocontext-mcp.git
 cd gocontext
 
 # Build with CGO (recommended - includes vector search)
@@ -1219,7 +1219,7 @@ A: Yes, use `gocontext index` in CI to keep indexes up-to-date automatically.
 
 ## Support
 
-- **Issues**: https://github.com/yourorg/gocontext/issues
+- **Issues**: https://github.com/dshills/gocontext-mcp/issues
 - **Discussions**: https://github.com/yourorg/gocontext/discussions
 - **Documentation**: https://gocontext.dev/docs
 

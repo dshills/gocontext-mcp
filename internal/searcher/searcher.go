@@ -110,55 +110,50 @@ func (s *Searcher) Search(ctx context.Context, req SearchRequest) (*SearchRespon
 	return response, nil
 }
 
+// searchResult holds results from concurrent search operations
+type searchResult struct {
+	vectorResults []storage.VectorResult
+	textResults   []storage.TextResult
+	err           error
+}
+
+// runVectorSearch executes vector search in a goroutine
+func (s *Searcher) runVectorSearch(ctx context.Context, req SearchRequest, resultChan chan<- searchResult) {
+	var res searchResult
+	embReq := embedder.EmbeddingRequest{Text: req.Query}
+	embedding, err := s.embedder.GenerateEmbedding(ctx, embReq)
+	if err != nil {
+		res.err = fmt.Errorf("failed to generate query embedding: %w", err)
+	} else {
+		res.vectorResults, res.err = s.storage.SearchVector(ctx, req.ProjectID, embedding.Vector, req.Limit*2, req.Filters)
+	}
+	select {
+	case resultChan <- res:
+	case <-ctx.Done():
+	}
+}
+
+// runTextSearch executes text search in a goroutine
+func (s *Searcher) runTextSearch(ctx context.Context, req SearchRequest, resultChan chan<- searchResult) {
+	var res searchResult
+	res.textResults, res.err = s.storage.SearchText(ctx, req.ProjectID, req.Query, req.Limit*2, req.Filters)
+	select {
+	case resultChan <- res:
+	case <-ctx.Done():
+	}
+}
+
 // hybridSearch combines vector and BM25 search using Reciprocal Rank Fusion
 func (s *Searcher) hybridSearch(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
-	// Run vector and text search in parallel
-	type result struct {
-		vectorResults []storage.VectorResult
-		textResults   []storage.TextResult
-		err           error
-	}
+	vectorChan := make(chan searchResult, 1)
+	textChan := make(chan searchResult, 1)
 
-	vectorChan := make(chan result, 1)
-	textChan := make(chan result, 1)
+	go s.runVectorSearch(ctx, req, vectorChan)
+	go s.runTextSearch(ctx, req, textChan)
 
-	// Start vector search
-	go func() {
-		var res result
-		embReq := embedder.EmbeddingRequest{
-			Text: req.Query,
-		}
-		embedding, err := s.embedder.GenerateEmbedding(ctx, embReq)
-		if err != nil {
-			res.err = fmt.Errorf("failed to generate query embedding: %w", err)
-			select {
-			case vectorChan <- res:
-			case <-ctx.Done():
-			}
-			return
-		}
-
-		res.vectorResults, res.err = s.storage.SearchVector(ctx, req.ProjectID, embedding.Vector, req.Limit*2, req.Filters)
-		select {
-		case vectorChan <- res:
-		case <-ctx.Done():
-		}
-	}()
-
-	// Start text search
-	go func() {
-		var res result
-		res.textResults, res.err = s.storage.SearchText(ctx, req.ProjectID, req.Query, req.Limit*2, req.Filters)
-		select {
-		case textChan <- res:
-		case <-ctx.Done():
-		}
-	}()
-
-	// Wait for both searches with context cancellation support
-	var vectorRes, textRes result
+	// Wait for both searches
+	var vectorRes, textRes searchResult
 	var vectorDone, textDone bool
-
 	for !vectorDone || !textDone {
 		select {
 		case vectorRes = <-vectorChan:
@@ -175,10 +170,8 @@ func (s *Searcher) hybridSearch(ctx context.Context, req SearchRequest) (*Search
 		return nil, fmt.Errorf("both searches failed: vector=%v, text=%v", vectorRes.err, textRes.err)
 	}
 
-	// Apply Reciprocal Rank Fusion
+	// Apply RRF and fetch results
 	rrf := s.applyRRF(vectorRes.vectorResults, textRes.textResults, req.RRFConstant)
-
-	// Fetch full results
 	results, err := s.fetchResults(ctx, rrf, req.Limit)
 	if err != nil {
 		return nil, err

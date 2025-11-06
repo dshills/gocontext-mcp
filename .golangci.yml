@@ -32,8 +32,16 @@ issues:
     - path: _test\.go
       linters:
         - errcheck
+        - ineffassign
+        - gosimple
+        - goconst
+        - staticcheck
     # Test files can have higher complexity for comprehensive test cases
     - path: _test\.go
       text: "cyclomatic complexity"
       linters:
         - gocyclo
+    # Test utilities in cmd/test_* directories
+    - path: cmd/test_
+      linters:
+        - errcheck
