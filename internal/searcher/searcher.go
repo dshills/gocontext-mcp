@@ -64,6 +64,11 @@ func NewSearcher(storage storage.Storage, embedder embedder.Embedder) *Searcher 
 func (s *Searcher) Search(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
 	startTime := time.Now()
 
+	// Validate searcher state
+	if s.embedder == nil {
+		return nil, fmt.Errorf("embedder not initialized")
+	}
+
 	// Validate request
 	if err := s.validateRequest(&req); err != nil {
 		return nil, fmt.Errorf("invalid search request: %w", err)

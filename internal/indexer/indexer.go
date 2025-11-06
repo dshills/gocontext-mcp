@@ -37,7 +37,7 @@ type Indexer struct {
 	workers int
 
 	// Concurrency control for indexing operations
-	indexMutex sync.Mutex
+	indexLock IndexLock
 }
 
 // Config contains configuration for the indexer
@@ -100,10 +100,10 @@ func NewWithEmbedder(storage storage.Storage, emb embedder.Embedder) *Indexer {
 // IndexProject indexes an entire Go project
 func (idx *Indexer) IndexProject(ctx context.Context, rootPath string, config *Config) (*Statistics, error) {
 	// Attempt to acquire lock for exclusive indexing access
-	if !idx.indexMutex.TryLock() {
+	if !idx.indexLock.TryAcquire() {
 		return nil, ErrIndexingInProgress
 	}
-	defer idx.indexMutex.Unlock()
+	defer idx.indexLock.Release()
 
 	if config == nil {
 		config = &Config{

@@ -57,16 +57,16 @@ func NewServer(dbPath string) (*Server, error) {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}
 
-	// Create embedder
+	// Create embedder (shared between indexer and searcher)
 	emb, err := embedder.NewFromEnv()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize embedder: %w", err)
 	}
 
-	// Create indexer
-	idx := indexer.New(store)
+	// Create indexer with shared embedder
+	idx := indexer.NewWithEmbedder(store, emb)
 
-	// Create searcher
+	// Create searcher with shared embedder
 	srch := searcher.NewSearcher(store, emb)
 
 	// Create MCP server

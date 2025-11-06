@@ -138,7 +138,8 @@ func (s *SQLiteStorage) CreateProject(ctx context.Context, project *Project) err
 	return s.createProjectWithQuerier(ctx, s.querier(), project)
 }
 
-func (s *SQLiteStorage) GetProject(ctx context.Context, rootPath string) (*Project, error) {
+// getProjectWithQuerier is the internal implementation that uses a querier
+func (s *SQLiteStorage) getProjectWithQuerier(ctx context.Context, q querier, rootPath string) (*Project, error) {
 	query := `
 		SELECT id, root_path, module_name, go_version, total_files, total_chunks,
 		       index_version, last_indexed_at, created_at, updated_at
@@ -147,7 +148,7 @@ func (s *SQLiteStorage) GetProject(ctx context.Context, rootPath string) (*Proje
 	`
 	var project Project
 	var lastIndexedAt sql.NullTime
-	err := s.db.QueryRowContext(ctx, query, rootPath).Scan(
+	err := q.QueryRowContext(ctx, query, rootPath).Scan(
 		&project.ID, &project.RootPath, &project.ModuleName, &project.GoVersion,
 		&project.TotalFiles, &project.TotalChunks, &project.IndexVersion,
 		&lastIndexedAt, &project.CreatedAt, &project.UpdatedAt,
@@ -162,6 +163,10 @@ func (s *SQLiteStorage) GetProject(ctx context.Context, rootPath string) (*Proje
 		project.LastIndexedAt = lastIndexedAt.Time
 	}
 	return &project, nil
+}
+
+func (s *SQLiteStorage) GetProject(ctx context.Context, rootPath string) (*Project, error) {
+	return s.getProjectWithQuerier(ctx, s.querier(), rootPath)
 }
 
 // updateProjectWithQuerier is the internal implementation that uses a querier
@@ -341,74 +346,47 @@ func (s *SQLiteStorage) ListFiles(ctx context.Context, projectID int64) ([]*File
 
 // upsertSymbolWithQuerier is the internal implementation that uses a querier
 func (s *SQLiteStorage) upsertSymbolWithQuerier(ctx context.Context, q querier, symbol *Symbol) error {
-	// Check if symbol already exists (natural key: file_id + name + start_line + start_col)
-	checkQuery := `
-		SELECT id, created_at FROM symbols
-		WHERE file_id = ? AND name = ? AND start_line = ? AND start_col = ?
-		LIMIT 1
-	`
-	var existingID int64
-	var createdAt time.Time
-	err := q.QueryRowContext(ctx, checkQuery,
-		symbol.FileID, symbol.Name, symbol.StartLine, symbol.StartCol,
-	).Scan(&existingID, &createdAt)
-
-	if err == nil {
-		// Symbol exists - UPDATE it
-		updateQuery := `
-			UPDATE symbols SET
-				kind = ?, package_name = ?, signature = ?, doc_comment = ?,
-				scope = ?, receiver = ?, end_line = ?, end_col = ?,
-				is_aggregate_root = ?, is_entity = ?, is_value_object = ?, is_repository = ?,
-				is_service = ?, is_command = ?, is_query = ?, is_handler = ?
-			WHERE id = ?
-		`
-		_, err = q.ExecContext(ctx, updateQuery,
-			symbol.Kind, symbol.PackageName, symbol.Signature, symbol.DocComment,
-			symbol.Scope, symbol.Receiver, symbol.EndLine, symbol.EndCol,
-			symbol.IsAggregateRoot, symbol.IsEntity, symbol.IsValueObject, symbol.IsRepository,
-			symbol.IsService, symbol.IsCommand, symbol.IsQuery, symbol.IsHandler,
-			existingID,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to update symbol: %w", err)
-		}
-		symbol.ID = existingID
-		symbol.CreatedAt = createdAt
-		return nil
-	}
-
-	if err != sql.ErrNoRows {
-		return fmt.Errorf("failed to check existing symbol: %w", err)
-	}
-
-	// Symbol doesn't exist - INSERT it
-	insertQuery := `
+	// Use atomic INSERT ... ON CONFLICT to avoid race conditions
+	query := `
 		INSERT INTO symbols (
 			file_id, name, kind, package_name, signature, doc_comment, scope, receiver,
 			start_line, start_col, end_line, end_col,
 			is_aggregate_root, is_entity, is_value_object, is_repository,
 			is_service, is_command, is_query, is_handler, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(file_id, name, start_line, start_col)
+		DO UPDATE SET
+			kind = excluded.kind,
+			package_name = excluded.package_name,
+			signature = excluded.signature,
+			doc_comment = excluded.doc_comment,
+			scope = excluded.scope,
+			receiver = excluded.receiver,
+			end_line = excluded.end_line,
+			end_col = excluded.end_col,
+			is_aggregate_root = excluded.is_aggregate_root,
+			is_entity = excluded.is_entity,
+			is_value_object = excluded.is_value_object,
+			is_repository = excluded.is_repository,
+			is_service = excluded.is_service,
+			is_command = excluded.is_command,
+			is_query = excluded.is_query,
+			is_handler = excluded.is_handler
+		RETURNING id, created_at
 	`
 	now := time.Now()
-	result, err := q.ExecContext(ctx, insertQuery,
+	err := q.QueryRowContext(ctx, query,
 		symbol.FileID, symbol.Name, symbol.Kind, symbol.PackageName,
 		symbol.Signature, symbol.DocComment, symbol.Scope, symbol.Receiver,
 		symbol.StartLine, symbol.StartCol, symbol.EndLine, symbol.EndCol,
 		symbol.IsAggregateRoot, symbol.IsEntity, symbol.IsValueObject, symbol.IsRepository,
 		symbol.IsService, symbol.IsCommand, symbol.IsQuery, symbol.IsHandler, now,
-	)
+	).Scan(&symbol.ID, &symbol.CreatedAt)
+
 	if err != nil {
-		return fmt.Errorf("failed to insert symbol: %w", err)
+		return fmt.Errorf("failed to upsert symbol: %w", err)
 	}
 
-	id, err := result.LastInsertId()
-	if err != nil {
-		return err
-	}
-	symbol.ID = id
-	symbol.CreatedAt = now
 	return nil
 }
 
@@ -527,76 +505,42 @@ func (s *SQLiteStorage) SearchSymbols(ctx context.Context, query string, limit i
 
 // upsertChunkWithQuerier is the internal implementation that uses a querier
 func (s *SQLiteStorage) upsertChunkWithQuerier(ctx context.Context, q querier, chunk *Chunk) error {
-	// Check if chunk already exists (natural key: file_id + start_line + end_line)
-	checkQuery := `
-		SELECT id, created_at FROM chunks
-		WHERE file_id = ? AND start_line = ? AND end_line = ?
-		LIMIT 1
-	`
-	var existingID int64
-	var createdAt time.Time
-	err := q.QueryRowContext(ctx, checkQuery,
-		chunk.FileID, chunk.StartLine, chunk.EndLine,
-	).Scan(&existingID, &createdAt)
-
+	// Use atomic INSERT ... ON CONFLICT to avoid race conditions
 	var symbolID interface{}
 	if chunk.SymbolID != nil {
 		symbolID = *chunk.SymbolID
 	}
 
-	if err == nil {
-		// Chunk exists - UPDATE it
-		updateQuery := `
-			UPDATE chunks SET
-				symbol_id = ?, content = ?, content_hash = ?, token_count = ?,
-				context_before = ?, context_after = ?, chunk_type = ?, updated_at = ?
-			WHERE id = ?
-		`
-		now := time.Now()
-		_, err = q.ExecContext(ctx, updateQuery,
-			symbolID, chunk.Content, chunk.ContentHash[:], chunk.TokenCount,
-			chunk.ContextBefore, chunk.ContextAfter, chunk.ChunkType, now,
-			existingID,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to update chunk: %w", err)
-		}
-		chunk.ID = existingID
-		chunk.CreatedAt = createdAt
-		chunk.UpdatedAt = now
-		return nil
-	}
-
-	if err != sql.ErrNoRows {
-		return fmt.Errorf("failed to check existing chunk: %w", err)
-	}
-
-	// Chunk doesn't exist - INSERT it
-	insertQuery := `
+	query := `
 		INSERT INTO chunks (
 			file_id, symbol_id, content, content_hash, token_count,
 			start_line, end_line, context_before, context_after, chunk_type,
 			created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(file_id, start_line, end_line)
+		DO UPDATE SET
+			symbol_id = excluded.symbol_id,
+			content = excluded.content,
+			content_hash = excluded.content_hash,
+			token_count = excluded.token_count,
+			context_before = excluded.context_before,
+			context_after = excluded.context_after,
+			chunk_type = excluded.chunk_type,
+			updated_at = excluded.updated_at
+		RETURNING id, created_at, updated_at
 	`
 	now := time.Now()
-	result, err := q.ExecContext(ctx, insertQuery,
+	err := q.QueryRowContext(ctx, query,
 		chunk.FileID, symbolID, chunk.Content, chunk.ContentHash[:],
 		chunk.TokenCount, chunk.StartLine, chunk.EndLine,
 		chunk.ContextBefore, chunk.ContextAfter, chunk.ChunkType,
 		now, now,
-	)
+	).Scan(&chunk.ID, &chunk.CreatedAt, &chunk.UpdatedAt)
+
 	if err != nil {
-		return fmt.Errorf("failed to insert chunk: %w", err)
+		return fmt.Errorf("failed to upsert chunk: %w", err)
 	}
 
-	id, err := result.LastInsertId()
-	if err != nil {
-		return err
-	}
-	chunk.ID = id
-	chunk.CreatedAt = now
-	chunk.UpdatedAt = now
 	return nil
 }
 
@@ -947,7 +891,7 @@ func (t *sqliteTx) CreateProject(ctx context.Context, project *Project) error {
 }
 
 func (t *sqliteTx) GetProject(ctx context.Context, rootPath string) (*Project, error) {
-	return t.storage.GetProject(ctx, rootPath)
+	return t.storage.getProjectWithQuerier(ctx, t.querier(), rootPath)
 }
 
 func (t *sqliteTx) UpdateProject(ctx context.Context, project *Project) error {
