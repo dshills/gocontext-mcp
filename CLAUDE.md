@@ -169,8 +169,12 @@ This project uses SpecKit for specification-driven development:
 
 ## Active Technologies
 - Go 1.25.4 (001-gocontext-mcp-server)
-- SQLite with vector extension (sqlite-vec) for embeddings and full-text search indexes (001-gocontext-mcp-server)
+- SQLite with vector extension (sqlite-vec) for embeddings and FTS5 for text search
+- github.com/Masterminds/semver/v3 for semantic versioning (002-code-quality-improvements)
+- github.com/hashicorp/golang-lru/v2 for LRU caching (002-code-quality-improvements)
+- golang.org/x/crypto/bcrypt for password hashing (002-code-quality-improvements)
 
 ## Recent Changes
+- 002-code-quality-improvements: Implemented 42 critical code quality fixes including security hardening (FTS5 injection protection, bcrypt hashing), performance optimizations (O(n log n) sorting, LRU cache), data integrity (atomic UPSERT, semantic versioning), and maintainability improvements (retry logic extraction, shared embedder instance)
 - 001-gocontext-mcp-server: Added Go 1.25.4
 - when creating binaries put them in the ./bin directory
