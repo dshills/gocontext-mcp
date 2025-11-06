@@ -141,8 +141,8 @@ Legend:
 - [X] T082 [US1] Implement progress tracking with atomic counters (indexed, skipped, failed)
 - [X] T083 [US1] Add context.Context support for cancellation
 - [X] T084 [US1] Transaction batching: commit files in batches of 10-50
-- [ ] T085 [US1] Write integration tests for full indexing pipeline in tests/integration/indexing_test.go
-- [ ] T086 [US1] Test incremental indexing (index, modify 10 files, re-index, verify only 10 re-indexed)
+- [X] T085 [US1] Write integration tests for full indexing pipeline in tests/integration/indexing_test.go
+- [X] T086 [US1] Test incremental indexing (index, modify 10 files, re-index, verify only 10 re-indexed)
 - [ ] T087 [US1] Test force re-index (rebuild entire index)
 - [ ] T088 [US1] Benchmark indexing performance with real codebase (target: 100k LOC in <5min without embeddings)
 
@@ -170,7 +170,7 @@ Legend:
 - [X] T105 [US1] Call Indexer.IndexProject with validated parameters
 - [X] T106 [US1] Return success response with statistics (files_indexed, symbols_extracted, chunks_created, duration)
 - [X] T107 [US1] Return error responses with appropriate error codes (-32602 for invalid path, -32603 for internal errors)
-- [ ] T108 [US1] Handle indexing_in_progress case (return error -32002) - TODO: Add mutex to prevent concurrent indexing
+- [X] T108 [US1] Handle indexing_in_progress case (return error -32002) - Mutex added to prevent concurrent indexing
 - [ ] T109 [US1] Write integration tests for index_codebase tool in tests/integration/mcp_test.go
 - [ ] T110 [US1] Test with sample Go project in tests/testdata/fixtures/
 - [ ] T111 [US1] Verify statistics returned match actual indexed files
@@ -271,12 +271,12 @@ Legend:
 
 ### Indexer: Generate Embeddings
 
-- [ ] T184 [US2] Integrate Embedder into Indexer coordinator
-- [ ] T185 [US2] Generate embeddings for all chunks after chunking step
-- [ ] T186 [US2] Batch chunks for efficient API calls
-- [ ] T187 [US2] Store embeddings with UpsertEmbedding
-- [ ] T188 [US2] Update progress tracking to include embeddings_generated count
-- [ ] T189 [US2] Handle embedding failures gracefully (log, continue with other chunks)
+- [X] T184 [US2] Integrate Embedder into Indexer coordinator
+- [X] T185 [US2] Generate embeddings for all chunks after chunking step
+- [X] T186 [US2] Batch chunks for efficient API calls
+- [X] T187 [US2] Store embeddings with UpsertEmbedding
+- [X] T188 [US2] Update progress tracking to include embeddings_generated count
+- [X] T189 [US2] Handle embedding failures gracefully (log, continue with other chunks)
 - [ ] T190 [US2] Write integration tests for indexing with embeddings in tests/integration/indexing_test.go
 - [ ] T191 [US2] Verify embeddings stored with correct dimension
 - [ ] T192 [US2] Benchmark full indexing with embeddings (target: 100k LOC in <5min)

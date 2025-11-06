@@ -228,7 +228,8 @@ func (s *SQLiteStorage) UpsertFile(ctx context.Context, file *File) error {
 	return s.upsertFileWithQuerier(ctx, s.querier(), file)
 }
 
-func (s *SQLiteStorage) GetFile(ctx context.Context, projectID int64, filePath string) (*File, error) {
+// getFileWithQuerier is the internal implementation that uses a querier
+func (s *SQLiteStorage) getFileWithQuerier(ctx context.Context, q querier, projectID int64, filePath string) (*File, error) {
 	query := `
 		SELECT id, project_id, file_path, package_name, content_hash, mod_time,
 		       size_bytes, parse_error, last_indexed_at, created_at, updated_at
@@ -238,7 +239,7 @@ func (s *SQLiteStorage) GetFile(ctx context.Context, projectID int64, filePath s
 	var file File
 	var hash []byte
 	var parseError sql.NullString
-	err := s.db.QueryRowContext(ctx, query, projectID, filePath).Scan(
+	err := q.QueryRowContext(ctx, query, projectID, filePath).Scan(
 		&file.ID, &file.ProjectID, &file.FilePath, &file.PackageName,
 		&hash, &file.ModTime, &file.SizeBytes, &parseError,
 		&file.LastIndexedAt, &file.CreatedAt, &file.UpdatedAt,
@@ -254,6 +255,10 @@ func (s *SQLiteStorage) GetFile(ctx context.Context, projectID int64, filePath s
 		file.ParseError = &parseError.String
 	}
 	return &file, nil
+}
+
+func (s *SQLiteStorage) GetFile(ctx context.Context, projectID int64, filePath string) (*File, error) {
+	return s.getFileWithQuerier(ctx, s.querier(), projectID, filePath)
 }
 
 func (s *SQLiteStorage) GetFileByID(ctx context.Context, fileID int64) (*File, error) {
@@ -939,7 +944,7 @@ func (t *sqliteTx) UpsertFile(ctx context.Context, file *File) error {
 }
 
 func (t *sqliteTx) GetFile(ctx context.Context, projectID int64, filePath string) (*File, error) {
-	return t.storage.GetFile(ctx, projectID, filePath)
+	return t.storage.getFileWithQuerier(ctx, t.querier(), projectID, filePath)
 }
 
 func (t *sqliteTx) GetFileByID(ctx context.Context, fileID int64) (*File, error) {

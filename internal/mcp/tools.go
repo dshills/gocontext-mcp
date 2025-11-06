@@ -65,6 +65,12 @@ func (s *Server) handleIndexCodebase(ctx context.Context, request mcp.CallToolRe
 	// Run indexing
 	stats, err := s.indexer.IndexProject(ctx, path, config)
 	if err != nil {
+		// Check if it's an "indexing in progress" error
+		if errors.Is(err, indexer.ErrIndexingInProgress) {
+			return nil, newMCPError(ErrorCodeIndexingInProgress, "Indexing already in progress for this project", map[string]interface{}{
+				"path": path,
+			})
+		}
 		return nil, newMCPError(ErrorCodeInternalError, "indexing failed", map[string]interface{}{
 			"error": err.Error(),
 		})

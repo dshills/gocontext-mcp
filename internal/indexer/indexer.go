@@ -3,8 +3,10 @@ package indexer
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -16,26 +18,36 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/dshills/gocontext-mcp/internal/chunker"
+	"github.com/dshills/gocontext-mcp/internal/embedder"
 	"github.com/dshills/gocontext-mcp/internal/parser"
 	"github.com/dshills/gocontext-mcp/internal/storage"
 )
 
-// Indexer coordinates the indexing pipeline: parse -> chunk -> store
+// ErrIndexingInProgress indicates that an indexing operation is already running
+var ErrIndexingInProgress = errors.New("indexing already in progress for this project")
+
+// Indexer coordinates the indexing pipeline: parse -> chunk -> embed -> store
 type Indexer struct {
-	parser  *parser.Parser
-	chunker *chunker.Chunker
-	storage storage.Storage
+	parser   *parser.Parser
+	chunker  *chunker.Chunker
+	embedder embedder.Embedder
+	storage  storage.Storage
 
 	// Worker pool configuration
 	workers int
+
+	// Concurrency control for indexing operations
+	indexMutex sync.Mutex
 }
 
 // Config contains configuration for the indexer
 type Config struct {
-	Workers       int  // Number of concurrent workers (default: runtime.NumCPU())
-	BatchSize     int  // Number of files to commit per transaction (default: 20)
-	IncludeTests  bool // Whether to index test files (default: true)
-	IncludeVendor bool // Whether to index vendor directory (default: false)
+	Workers            int  // Number of concurrent workers (default: runtime.NumCPU())
+	BatchSize          int  // Number of files to commit per transaction (default: 20)
+	EmbeddingBatch     int  // Number of chunks per embedding batch (default: 30)
+	IncludeTests       bool // Whether to index test files (default: true)
+	IncludeVendor      bool // Whether to index vendor directory (default: false)
+	GenerateEmbeddings bool // Whether to generate embeddings (default: true)
 }
 
 // Progress tracks indexing progress
@@ -52,33 +64,67 @@ type Progress struct {
 
 // Statistics contains statistics about the indexing operation
 type Statistics struct {
-	FilesIndexed     int
-	FilesSkipped     int
-	FilesFailed      int
-	SymbolsExtracted int
-	ChunksCreated    int
-	Duration         time.Duration
-	ErrorMessages    []string
+	FilesIndexed        int
+	FilesSkipped        int
+	FilesFailed         int
+	SymbolsExtracted    int
+	ChunksCreated       int
+	EmbeddingsGenerated int
+	EmbeddingsFailed    int
+	Duration            time.Duration
+	ErrorMessages       []string
 }
 
 // New creates a new Indexer instance
 func New(storage storage.Storage) *Indexer {
 	return &Indexer{
-		parser:  parser.New(),
-		chunker: chunker.New(),
-		storage: storage,
-		workers: runtime.NumCPU(),
+		parser:   parser.New(),
+		chunker:  chunker.New(),
+		embedder: nil, // Lazy initialization on first use
+		storage:  storage,
+		workers:  runtime.NumCPU(),
+	}
+}
+
+// NewWithEmbedder creates a new Indexer with a pre-configured embedder
+func NewWithEmbedder(storage storage.Storage, emb embedder.Embedder) *Indexer {
+	return &Indexer{
+		parser:   parser.New(),
+		chunker:  chunker.New(),
+		embedder: emb,
+		storage:  storage,
+		workers:  runtime.NumCPU(),
 	}
 }
 
 // IndexProject indexes an entire Go project
 func (idx *Indexer) IndexProject(ctx context.Context, rootPath string, config *Config) (*Statistics, error) {
+	// Attempt to acquire lock for exclusive indexing access
+	if !idx.indexMutex.TryLock() {
+		return nil, ErrIndexingInProgress
+	}
+	defer idx.indexMutex.Unlock()
+
 	if config == nil {
 		config = &Config{
-			Workers:       runtime.NumCPU(),
-			BatchSize:     20,
-			IncludeTests:  true,
-			IncludeVendor: false,
+			Workers:            runtime.NumCPU(),
+			BatchSize:          20,
+			EmbeddingBatch:     30,
+			IncludeTests:       true,
+			IncludeVendor:      false,
+			GenerateEmbeddings: true,
+		}
+	}
+
+	// Initialize embedder if needed and embeddings are requested
+	if config.GenerateEmbeddings && idx.embedder == nil {
+		emb, err := embedder.NewFromEnv()
+		if err != nil {
+			// Log warning but continue without embeddings
+			log.Printf("Warning: Failed to initialize embedder: %v. Continuing without embeddings.", err)
+			config.GenerateEmbeddings = false
+		} else {
+			idx.embedder = emb
 		}
 	}
 
@@ -197,11 +243,13 @@ func (idx *Indexer) indexFiles(ctx context.Context, project *storage.Project, fi
 
 	// Track progress with atomic counters
 	var (
-		indexed int32
-		skipped int32
-		failed  int32
-		symbols int32
-		chunks  int32
+		indexed        int32
+		skipped        int32
+		failed         int32
+		symbols        int32
+		chunks         int32
+		embeddings     int32
+		embeddingsFail int32
 	)
 
 	// Process files in batches for transaction efficiency
@@ -222,7 +270,7 @@ func (idx *Indexer) indexFiles(ctx context.Context, project *storage.Project, fi
 		batch := files[i:end]
 
 		g.Go(func() error {
-			return idx.indexBatch(gctx, project, batch, semaphore, &indexed, &skipped, &failed, &symbols, &chunks, &mu, stats)
+			return idx.indexBatch(gctx, project, batch, config, semaphore, &indexed, &skipped, &failed, &symbols, &chunks, &embeddings, &embeddingsFail, &mu, stats)
 		})
 	}
 
@@ -237,13 +285,21 @@ func (idx *Indexer) indexFiles(ctx context.Context, project *storage.Project, fi
 	stats.FilesFailed = int(failed)
 	stats.SymbolsExtracted = int(symbols)
 	stats.ChunksCreated = int(chunks)
+	stats.EmbeddingsGenerated = int(embeddings)
+	stats.EmbeddingsFailed = int(embeddingsFail)
 
 	return nil
 }
 
+// chunkWithID pairs a chunk with its content for embedding
+type chunkWithID struct {
+	chunk   *storage.Chunk
+	content string
+}
+
 // indexBatch indexes a batch of files within a transaction
-func (idx *Indexer) indexBatch(ctx context.Context, project *storage.Project, files []string,
-	semaphore chan struct{}, indexed, skipped, failed, symbols, chunks *int32,
+func (idx *Indexer) indexBatch(ctx context.Context, project *storage.Project, files []string, config *Config,
+	semaphore chan struct{}, indexed, skipped, failed, symbols, chunks, embeddings, embeddingsFail *int32,
 	mu *sync.Mutex, stats *Statistics) error {
 
 	// Start a transaction for this batch
@@ -252,6 +308,9 @@ func (idx *Indexer) indexBatch(ctx context.Context, project *storage.Project, fi
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Collect chunks from all files in this batch for batch embedding
+	var allChunks []chunkWithID
 
 	// Process each file in the batch
 	for _, filePath := range files {
@@ -262,7 +321,7 @@ func (idx *Indexer) indexBatch(ctx context.Context, project *storage.Project, fi
 			// Acquire semaphore
 		}
 
-		err := idx.indexFile(ctx, tx, project, filePath, indexed, skipped, failed, symbols, chunks)
+		fileChunks, err := idx.indexFile(ctx, tx, project, filePath, indexed, skipped, failed, symbols, chunks)
 		<-semaphore // Release semaphore
 
 		if err != nil {
@@ -273,45 +332,60 @@ func (idx *Indexer) indexBatch(ctx context.Context, project *storage.Project, fi
 			// Continue with other files
 			continue
 		}
+
+		// Collect chunks for embedding
+		if config.GenerateEmbeddings && len(fileChunks) > 0 {
+			for _, chunk := range fileChunks {
+				allChunks = append(allChunks, chunkWithID{
+					chunk:   chunk,
+					content: chunk.Content,
+				})
+			}
+		}
 	}
 
-	// Commit the batch
+	// Commit the batch (must happen before embeddings to have chunk IDs)
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// Generate embeddings for all chunks in this batch
+	if config.GenerateEmbeddings && len(allChunks) > 0 && idx.embedder != nil {
+		idx.generateEmbeddingsForChunks(ctx, allChunks, config.EmbeddingBatch, embeddings, embeddingsFail, mu, stats)
 	}
 
 	return nil
 }
 
-// indexFile indexes a single file
+// indexFile indexes a single file and returns the stored chunks
 func (idx *Indexer) indexFile(ctx context.Context, store storage.Storage, project *storage.Project,
-	filePath string, indexed, skipped, failed, symbols, chunks *int32) error {
+	filePath string, indexed, skipped, failed, symbols, chunks *int32) ([]*storage.Chunk, error) {
 
 	// Compute relative path
 	relPath, err := filepath.Rel(project.RootPath, filePath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Compute file hash
 	hash, modTime, sizeBytes, err := computeFileHash(filePath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Check if file has changed and handle incremental update
 	shouldSkip, err := idx.checkFileChanged(ctx, store, project.ID, relPath, hash, skipped)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if shouldSkip {
-		return nil
+		return nil, nil
 	}
 
 	// Parse the file
 	parseResult, err := idx.parser.ParseFile(filePath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Create or update file record
@@ -331,7 +405,7 @@ func (idx *Indexer) indexFile(ctx context.Context, store storage.Storage, projec
 	}
 
 	if err := store.UpsertFile(ctx, file); err != nil {
-		return err
+		return nil, err
 	}
 
 	// Store imports
@@ -342,7 +416,7 @@ func (idx *Indexer) indexFile(ctx context.Context, store storage.Storage, projec
 			Alias:      imp.Alias,
 		}
 		if err := store.UpsertImport(ctx, impRecord); err != nil {
-			return fmt.Errorf("failed to store import: %w", err)
+			return nil, fmt.Errorf("failed to store import: %w", err)
 		}
 	}
 
@@ -351,7 +425,7 @@ func (idx *Indexer) indexFile(ctx context.Context, store storage.Storage, projec
 	for i := range parseResult.Symbols {
 		sym := storage.FromTypesSymbol(parseResult.Symbols[i], file.ID)
 		if err := store.UpsertSymbol(ctx, sym); err != nil {
-			return fmt.Errorf("failed to store symbol: %w", err)
+			return nil, fmt.Errorf("failed to store symbol: %w", err)
 		}
 		symbolCount++
 	}
@@ -359,10 +433,11 @@ func (idx *Indexer) indexFile(ctx context.Context, store storage.Storage, projec
 	// Create chunks
 	fileChunks, err := idx.chunker.ChunkFile(filePath, parseResult, file.ID)
 	if err != nil {
-		return fmt.Errorf("failed to chunk file: %w", err)
+		return nil, fmt.Errorf("failed to chunk file: %w", err)
 	}
 
-	// Store chunks
+	// Store chunks and collect them for return
+	var storedChunks []*storage.Chunk
 	chunkCount := 0
 	for _, chunk := range fileChunks {
 		storageChunk := &storage.Chunk{
@@ -378,8 +453,9 @@ func (idx *Indexer) indexFile(ctx context.Context, store storage.Storage, projec
 			ChunkType:     string(chunk.ChunkType),
 		}
 		if err := store.UpsertChunk(ctx, storageChunk); err != nil {
-			return fmt.Errorf("failed to store chunk: %w", err)
+			return nil, fmt.Errorf("failed to store chunk: %w", err)
 		}
+		storedChunks = append(storedChunks, storageChunk)
 		chunkCount++
 	}
 
@@ -388,7 +464,7 @@ func (idx *Indexer) indexFile(ctx context.Context, store storage.Storage, projec
 	atomic.AddInt32(symbols, int32(symbolCount))
 	atomic.AddInt32(chunks, int32(chunkCount))
 
-	return nil
+	return storedChunks, nil
 }
 
 // checkFileChanged checks if a file has changed and needs re-indexing
@@ -442,6 +518,77 @@ func (idx *Indexer) updateProjectStats(ctx context.Context, project *storage.Pro
 	project.LastIndexedAt = time.Now()
 
 	return idx.storage.UpdateProject(ctx, project)
+}
+
+// generateEmbeddingsForChunks generates embeddings for a batch of chunks
+func (idx *Indexer) generateEmbeddingsForChunks(ctx context.Context, chunks []chunkWithID, batchSize int, embeddings, embeddingsFail *int32, mu *sync.Mutex, stats *Statistics) {
+	if batchSize <= 0 {
+		batchSize = 30
+	}
+
+	// Process chunks in batches
+	for i := 0; i < len(chunks); i += batchSize {
+		end := i + batchSize
+		if end > len(chunks) {
+			end = len(chunks)
+		}
+		batch := chunks[i:end]
+
+		// Prepare batch request
+		texts := make([]string, len(batch))
+		for j, c := range batch {
+			texts[j] = c.content
+		}
+
+		// Generate embeddings for this batch
+		resp, err := idx.embedder.GenerateBatch(ctx, embedder.BatchEmbeddingRequest{
+			Texts: texts,
+		})
+
+		if err != nil {
+			// Log error and track failure
+			mu.Lock()
+			stats.ErrorMessages = append(stats.ErrorMessages, fmt.Sprintf("embedding batch %d-%d: %v", i, end, err))
+			mu.Unlock()
+			atomic.AddInt32(embeddingsFail, int32(len(batch)))
+			continue
+		}
+
+		// Store embeddings
+		for j, emb := range resp.Embeddings {
+			if j >= len(batch) {
+				break
+			}
+
+			chunkID := batch[j].chunk.ID
+			if chunkID == 0 {
+				// Chunk wasn't stored successfully, skip
+				atomic.AddInt32(embeddingsFail, 1)
+				continue
+			}
+
+			// Serialize vector
+			vectorBlob := storage.SerializeVector(emb.Vector)
+
+			storageEmb := &storage.Embedding{
+				ChunkID:   chunkID,
+				Vector:    vectorBlob,
+				Dimension: emb.Dimension,
+				Provider:  emb.Provider,
+				Model:     emb.Model,
+			}
+
+			if err := idx.storage.UpsertEmbedding(ctx, storageEmb); err != nil {
+				mu.Lock()
+				stats.ErrorMessages = append(stats.ErrorMessages, fmt.Sprintf("store embedding chunk %d: %v", chunkID, err))
+				mu.Unlock()
+				atomic.AddInt32(embeddingsFail, 1)
+				continue
+			}
+
+			atomic.AddInt32(embeddings, 1)
+		}
+	}
 }
 
 // computeFileHash computes SHA-256 hash of a file
