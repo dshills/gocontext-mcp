@@ -95,3 +95,4 @@ settings.local.json
 *_secret*.json
 secrets/
 credentials/
+tests/e2e/

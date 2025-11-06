@@ -304,7 +304,7 @@ Once indexed, use Claude Code to search your codebase:
 You can also search directly from command line:
 
 ```bash
-# Semantic search
+# Semantic search (default: hybrid mode)
 gocontext search "user authentication logic"
 
 # Symbol search
@@ -313,15 +313,250 @@ gocontext search "func ParseFile"
 # Limit results
 gocontext search "error handling" --limit 5
 
+# Search modes
+gocontext search "validation" --mode hybrid     # Default: vector + keyword
+gocontext search "validation" --mode vector     # Pure semantic search
+gocontext search "ParseFile" --mode keyword     # Keyword-only (faster)
+
 # Filter by symbol type
-gocontext search "validation" --type function,method
+gocontext search "validation" --filter-types function,method
 
-# Search specific directory
-gocontext search "database" --path internal/db
+# Filter by DDD patterns
+gocontext search "user logic" --filter-ddd service,repository
 
-# Keyword-only search (faster, no embeddings)
-gocontext search "ParseFile" --mode keyword
+# Filter by package
+gocontext search "database" --filter-packages internal/db,pkg/storage
+
+# Combine filters
+gocontext search "auth" --filter-types function --filter-packages internal/auth --limit 5
 ```
+
+---
+
+## CLI Reference
+
+### Commands
+
+#### gocontext index
+
+Index or re-index a Go codebase.
+
+**Usage**:
+```bash
+gocontext index [flags] <path>
+```
+
+**Flags**:
+- `--force` - Force full re-index, ignoring file hashes (rebuilds entire index)
+- `--workers <n>` - Number of concurrent workers (default: CPU count)
+- `--batch-size <n>` - Embedding batch size for API calls (default: 20)
+- `--exclude-tests` - Skip `*_test.go` files
+- `--exclude-vendor` - Skip `vendor/` directory (always excluded by default)
+- `--include-vendor` - Include `vendor/` directory in indexing
+
+**Examples**:
+```bash
+# Index current directory
+gocontext index .
+
+# Force complete re-index
+gocontext index --force /path/to/project
+
+# Index with more workers for faster processing
+gocontext index --workers 16 /path/to/project
+
+# Index without test files
+gocontext index --exclude-tests /path/to/project
+
+# Index with larger batches (faster if API rate limits allow)
+gocontext index --batch-size 50 /path/to/project
+```
+
+#### gocontext search
+
+Search indexed Go codebase.
+
+**Usage**:
+```bash
+gocontext search [flags] <query>
+```
+
+**Flags**:
+- `--path <path>` - Path to indexed project (default: current directory)
+- `--limit <n>` - Maximum number of results (default: 10, max: 100)
+- `--mode <mode>` - Search mode: `hybrid`, `vector`, or `keyword` (default: hybrid)
+- `--filter-types <types>` - Filter by symbol types (comma-separated): `function`, `method`, `struct`, `interface`, `type`
+- `--filter-packages <pkgs>` - Filter by package names (comma-separated)
+- `--filter-ddd <patterns>` - Filter by DDD patterns (comma-separated): `aggregate`, `entity`, `value_object`, `repository`, `service`, `command`, `query`, `handler`
+- `--min-score <score>` - Minimum relevance score threshold (0.0-1.0)
+- `--output <format>` - Output format: `text` (default), `json`
+
+**Examples**:
+```bash
+# Basic search
+gocontext search "authentication logic"
+
+# Search with filters
+gocontext search "validation" --filter-types function,method --limit 20
+
+# Search in specific project
+gocontext search "database queries" --path /path/to/project
+
+# JSON output for scripting
+gocontext search "error handling" --output json
+
+# High-precision search
+gocontext search "auth middleware" --min-score 0.8
+
+# DDD pattern search
+gocontext search "user management" --filter-ddd repository,service
+```
+
+#### gocontext status
+
+Check indexing status and statistics.
+
+**Usage**:
+```bash
+gocontext status [flags] <path>
+```
+
+**Flags**:
+- `--output <format>` - Output format: `text` (default), `json`
+
+**Examples**:
+```bash
+# Check current directory status
+gocontext status .
+
+# Check specific project
+gocontext status /path/to/project
+
+# JSON output
+gocontext status --output json /path/to/project
+```
+
+#### gocontext serve
+
+Start MCP server (stdio transport).
+
+**Usage**:
+```bash
+gocontext serve
+```
+
+**Environment Variables**:
+- `JINA_API_KEY` - Jina AI API key for embeddings
+- `OPENAI_API_KEY` - OpenAI API key for embeddings
+- `GOCONTEXT_EMBEDDING_PROVIDER` - Explicit provider: `jina`, `openai`, or `local`
+- `GOCONTEXT_DB_PATH` - Custom database directory (default: `~/.gocontext/indices`)
+- `GOCONTEXT_LOG_LEVEL` - Log level: `debug`, `info`, `warn`, `error` (default: info)
+
+**Notes**:
+- Used by MCP clients (Claude Code, Codex CLI)
+- Communicates via stdio (standard input/output)
+- Should not be run directly by users
+- Configured in MCP client configuration files
+
+#### gocontext delete
+
+Remove index for a project.
+
+**Usage**:
+```bash
+gocontext delete <path>
+```
+
+**Examples**:
+```bash
+# Delete index for current directory
+gocontext delete .
+
+# Delete index for specific project
+gocontext delete /path/to/project
+```
+
+#### gocontext version
+
+Display version information.
+
+**Usage**:
+```bash
+gocontext version
+```
+
+**Output**:
+```
+gocontext version 1.0.0
+Go version: go1.25.4
+Build tags: sqlite_vec
+Vector extension: enabled
+```
+
+### Global Flags
+
+Available for all commands:
+
+- `--help`, `-h` - Show help for command
+- `--verbose`, `-v` - Enable verbose output
+- `--quiet`, `-q` - Suppress non-error output
+- `--config <file>` - Load configuration from file
+
+### Configuration File
+
+GoContext can load settings from a configuration file:
+
+**Location** (checked in order):
+1. Path specified by `--config` flag
+2. `.gocontext.yaml` in current directory
+3. `~/.gocontext/config.yaml`
+
+**Example** (`~/.gocontext/config.yaml`):
+```yaml
+# Embedding provider configuration
+embedding:
+  provider: jina  # jina, openai, or local
+  api_key: ${JINA_API_KEY}  # Environment variable reference
+  batch_size: 20
+  timeout: 30s
+
+# Database configuration
+database:
+  path: ~/.gocontext/indices
+  max_connections: 10
+
+# Indexing defaults
+indexing:
+  workers: 8
+  include_tests: true
+  include_vendor: false
+  exclude_patterns:
+    - "**/testdata/**"
+    - "**/mocks/**"
+    - "**/*.pb.go"  # Exclude generated protobuf files
+
+# Search defaults
+search:
+  mode: hybrid
+  limit: 10
+  min_score: 0.0
+
+# Logging
+logging:
+  level: info  # debug, info, warn, error
+  format: text  # text or json
+```
+
+### Exit Codes
+
+GoContext uses standard exit codes:
+
+- `0` - Success
+- `1` - General error (invalid arguments, file not found, etc.)
+- `2` - Index error (indexing failed, corrupt index)
+- `3` - Search error (search failed, project not indexed)
+- `4` - API error (embedding API failure, rate limit)
+- `5` - Database error (SQLite error, disk full)
 
 ---
 

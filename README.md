@@ -19,7 +19,39 @@ GoContext is a Model Context Protocol (MCP) server that provides symbol-aware se
 
 ### Installation
 
-#### Option 1: Build from Source (Recommended)
+#### Option 1: Download Pre-built Binary (Recommended)
+
+Download the latest release for your platform from the [releases page](https://github.com/dshills/gocontext-mcp/releases):
+
+```bash
+# macOS Apple Silicon
+curl -LO https://github.com/dshills/gocontext-mcp/releases/download/v1.0.0/gocontext-darwin-arm64
+chmod +x gocontext-darwin-arm64
+sudo mv gocontext-darwin-arm64 /usr/local/bin/gocontext
+
+# macOS Intel
+curl -LO https://github.com/dshills/gocontext-mcp/releases/download/v1.0.0/gocontext-darwin-amd64
+chmod +x gocontext-darwin-amd64
+sudo mv gocontext-darwin-amd64 /usr/local/bin/gocontext
+
+# Linux x86_64
+curl -LO https://github.com/dshills/gocontext-mcp/releases/download/v1.0.0/gocontext-linux-amd64
+chmod +x gocontext-linux-amd64
+sudo mv gocontext-linux-amd64 /usr/local/bin/gocontext
+
+# Verify installation
+gocontext --version
+```
+
+#### Option 2: Install with Go
+
+```bash
+go install github.com/dshills/gocontext-mcp/cmd/gocontext@latest
+```
+
+**Note**: Requires Go 1.25.4+. The build mode (CGO vs Pure Go) depends on your `CGO_ENABLED` environment variable.
+
+#### Option 3: Build from Source
 
 ```bash
 # Clone the repository
@@ -29,19 +61,13 @@ cd gocontext-mcp
 # Build with CGO (includes sqlite-vec extension for fast vector search)
 make build
 
-# The binary will be available at bin/gocontext
-```
-
-#### Option 2: Pure Go Build (No CGO)
-
-If you don't have a C compiler or prefer a pure Go build:
-
-```bash
-# Build without CGO (slower vector operations, but no dependencies)
+# Or build pure Go version (no C compiler needed)
 make build-purego
 
-# The binary will be available at bin/gocontext-purego
+# Binary available at bin/gocontext
 ```
+
+For detailed platform-specific instructions, see [docs/installation.md](docs/installation.md).
 
 ### Build Requirements
 

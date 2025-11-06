@@ -3,13 +3,16 @@ package integration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/suite"
 
+	"github.com/dshills/gocontext-mcp/internal/embedder"
 	"github.com/dshills/gocontext-mcp/internal/indexer"
 	"github.com/dshills/gocontext-mcp/internal/storage"
 )
@@ -410,6 +413,101 @@ func (s *IndexingTestSuite) verifyDDDPatterns(projectID int64) {
 	s.True(foundQuery, "should detect query (ProcessOrderQuery)")
 }
 
+// TestForceReindex tests force re-indexing regardless of file hash
+func (s *IndexingTestSuite) TestForceReindex() {
+	// Create a temporary directory with a copy of fixtures
+	tempDir := s.T().TempDir()
+
+	// Copy a fixture file
+	srcPath := filepath.Join(s.fixturesDir, "sample_simple.go")
+	dstPath := filepath.Join(tempDir, "sample_simple.go")
+
+	content, err := os.ReadFile(srcPath)
+	s.Require().NoError(err)
+	err = os.WriteFile(dstPath, content, 0644)
+	s.Require().NoError(err)
+
+	config := &indexer.Config{
+		IncludeTests:       true,
+		IncludeVendor:      false,
+		GenerateEmbeddings: false,
+	}
+
+	// Initial indexing
+	stats1, err := s.indexer.IndexProject(s.ctx, tempDir, config)
+	s.Require().NoError(err)
+	s.Equal(1, stats1.FilesIndexed, "should index one file initially")
+
+	project, err := s.storage.GetProject(s.ctx, tempDir)
+	s.Require().NoError(err)
+
+	// Get initial data
+	files, err := s.storage.ListFiles(s.ctx, project.ID)
+	s.Require().NoError(err)
+	s.Len(files, 1)
+	initialFileID := files[0].ID
+	initialHash := files[0].ContentHash
+
+	initialSymbols, err := s.storage.ListSymbolsByFile(s.ctx, initialFileID)
+	s.Require().NoError(err)
+	initialSymbolCount := len(initialSymbols)
+	s.Greater(initialSymbolCount, 0, "should have symbols")
+
+	initialChunks, err := s.storage.ListChunksByFile(s.ctx, initialFileID)
+	s.Require().NoError(err)
+	initialChunkCount := len(initialChunks)
+	s.Greater(initialChunkCount, 0, "should have chunks")
+
+	// Re-index without changes - should skip
+	stats2, err := s.indexer.IndexProject(s.ctx, tempDir, config)
+	s.Require().NoError(err)
+	s.Equal(0, stats2.FilesIndexed, "should skip unchanged file")
+	s.Equal(1, stats2.FilesSkipped, "should report skipped file")
+
+	// Now simulate force re-index by manually deleting the file record
+	// This simulates the force_reindex behavior
+	err = s.storage.DeleteFile(s.ctx, initialFileID)
+	s.Require().NoError(err)
+
+	// Force re-index by indexing again (file no longer exists in DB)
+	stats3, err := s.indexer.IndexProject(s.ctx, tempDir, config)
+	s.Require().NoError(err)
+	s.Equal(1, stats3.FilesIndexed, "should re-index file in force mode")
+	s.Equal(0, stats3.FilesSkipped, "should not skip any files")
+
+	// Verify new data was created
+	files, err = s.storage.ListFiles(s.ctx, project.ID)
+	s.Require().NoError(err)
+	s.Len(files, 1)
+	newFileID := files[0].ID
+	newHash := files[0].ContentHash
+
+	// File ID should be different (new record)
+	s.NotEqual(initialFileID, newFileID, "should create new file record")
+
+	// Hash should be the same (file content unchanged)
+	s.Equal(initialHash, newHash, "content hash should be identical")
+
+	// Verify symbols were re-created
+	newSymbols, err := s.storage.ListSymbolsByFile(s.ctx, newFileID)
+	s.NoError(err)
+	s.Equal(initialSymbolCount, len(newSymbols), "should recreate same number of symbols")
+
+	// Verify chunks were re-created
+	newChunks, err := s.storage.ListChunksByFile(s.ctx, newFileID)
+	s.NoError(err)
+	s.Equal(initialChunkCount, len(newChunks), "should recreate same number of chunks")
+
+	// Verify old file data was cleaned up (cascaded deletes)
+	oldSymbols, err := s.storage.ListSymbolsByFile(s.ctx, initialFileID)
+	s.NoError(err)
+	s.Empty(oldSymbols, "old symbols should be deleted")
+
+	oldChunks, err := s.storage.ListChunksByFile(s.ctx, initialFileID)
+	s.NoError(err)
+	s.Empty(oldChunks, "old chunks should be deleted")
+}
+
 // TestConcurrentIndexingAttempts tests that concurrent indexing attempts are properly handled
 func (s *IndexingTestSuite) TestConcurrentIndexingAttempts() {
 	// This test directly verifies that ErrIndexingInProgress is returned
@@ -500,6 +598,399 @@ func (s *IndexingTestSuite) TestConcurrentIndexingAttempts() {
 		s.T().Log("Both indexing operations completed (ran sequentially due to fast execution)")
 	}
 }
+
+// TestLargeFile tests indexing a file with >10k lines
+func (s *IndexingTestSuite) TestLargeFile() {
+	tempDir := s.T().TempDir()
+
+	// Generate a large Go file with realistic content
+	var content strings.Builder
+	content.WriteString("package large\n\n")
+	content.WriteString("// Large file for stress testing\n\n")
+
+	// Generate many functions to reach >10k lines (each function ~20 lines)
+	for i := 0; i < 600; i++ {
+		content.WriteString(fmt.Sprintf("// Function%d performs operation %d\n", i, i))
+		content.WriteString(fmt.Sprintf("// This is a generated function for stress testing\n"))
+		content.WriteString(fmt.Sprintf("// It simulates real Go code structure\n"))
+		content.WriteString(fmt.Sprintf("func Function%d(x int, y int) int {\n", i))
+		content.WriteString("	// Initialize result\n")
+		content.WriteString("	result := x + y\n")
+		content.WriteString("	\n")
+		content.WriteString("	// Process calculation\n")
+		content.WriteString("	for i := 0; i < 10; i++ {\n")
+		content.WriteString("		result = result * 2\n")
+		content.WriteString("		if result > 1000 {\n")
+		content.WriteString("			result = result / 2\n")
+		content.WriteString("		}\n")
+		content.WriteString("	}\n")
+		content.WriteString("	\n")
+		content.WriteString("	// Additional processing\n")
+		content.WriteString("	if result < 0 {\n")
+		content.WriteString("		result = -result\n")
+		content.WriteString("	}\n")
+		content.WriteString("	\n")
+		content.WriteString("	// Return final result\n")
+		content.WriteString("	return result\n")
+		content.WriteString("}\n\n")
+	}
+
+	largePath := filepath.Join(tempDir, "large.go")
+	err := os.WriteFile(largePath, []byte(content.String()), 0644)
+	s.Require().NoError(err)
+
+	// Verify file size
+	info, err := os.Stat(largePath)
+	s.Require().NoError(err)
+	lineCount := len(strings.Split(content.String(), "\n"))
+	s.T().Logf("Generated file: %d bytes, ~%d lines", info.Size(), lineCount)
+	s.Greater(lineCount, 10000, "should have >10k lines")
+
+	config := &indexer.Config{
+		IncludeTests:       true,
+		IncludeVendor:      false,
+		GenerateEmbeddings: false,
+	}
+
+	// Index the large file
+	stats, err := s.indexer.IndexProject(s.ctx, tempDir, config)
+	s.Require().NoError(err, "should index large file successfully")
+	s.Equal(1, stats.FilesIndexed, "should index the large file")
+	s.Greater(stats.SymbolsExtracted, 100, "should extract many symbols")
+	s.Greater(stats.ChunksCreated, 100, "should create many chunks")
+
+	// Verify data integrity
+	project, err := s.storage.GetProject(s.ctx, tempDir)
+	s.Require().NoError(err)
+
+	files, err := s.storage.ListFiles(s.ctx, project.ID)
+	s.NoError(err)
+	s.Len(files, 1)
+
+	symbols, err := s.storage.ListSymbolsByFile(s.ctx, files[0].ID)
+	s.NoError(err)
+	s.Greater(len(symbols), 100, "should extract many symbols from large file")
+}
+
+// TestEmptyProject tests indexing a project with no Go files
+func (s *IndexingTestSuite) TestEmptyProject() {
+	tempDir := s.T().TempDir()
+
+	// Create subdirectories but no Go files
+	err := os.MkdirAll(filepath.Join(tempDir, "pkg", "empty"), 0755)
+	s.Require().NoError(err)
+
+	// Add non-Go files
+	err = os.WriteFile(filepath.Join(tempDir, "README.md"), []byte("# Empty Project"), 0644)
+	s.Require().NoError(err)
+
+	config := &indexer.Config{
+		IncludeTests:  true,
+		IncludeVendor: false,
+	}
+
+	// Should complete without error
+	stats, err := s.indexer.IndexProject(s.ctx, tempDir, config)
+	s.Require().NoError(err, "should handle empty project gracefully")
+	s.Equal(0, stats.FilesIndexed, "should index no files")
+	s.Equal(0, stats.SymbolsExtracted, "should extract no symbols")
+	s.Equal(0, stats.ChunksCreated, "should create no chunks")
+
+	// Project should still be created
+	project, err := s.storage.GetProject(s.ctx, tempDir)
+	s.NoError(err)
+	s.NotNil(project)
+	s.Equal(0, project.TotalFiles)
+	s.Equal(0, project.TotalChunks)
+}
+
+// TestDirectoryWithoutGoFiles tests directory with no Go files
+func (s *IndexingTestSuite) TestDirectoryWithoutGoFiles() {
+	tempDir := s.T().TempDir()
+
+	// Create files of other types
+	err := os.WriteFile(filepath.Join(tempDir, "config.yaml"), []byte("key: value"), 0644)
+	s.Require().NoError(err)
+	err = os.WriteFile(filepath.Join(tempDir, "script.sh"), []byte("#!/bin/bash\necho test"), 0644)
+	s.Require().NoError(err)
+	err = os.WriteFile(filepath.Join(tempDir, "data.json"), []byte("{}"), 0644)
+	s.Require().NoError(err)
+
+	config := &indexer.Config{
+		IncludeTests:  true,
+		IncludeVendor: false,
+	}
+
+	stats, err := s.indexer.IndexProject(s.ctx, tempDir, config)
+	s.Require().NoError(err, "should handle non-Go directory gracefully")
+	s.Equal(0, stats.FilesIndexed)
+	s.Equal(0, stats.SymbolsExtracted)
+}
+
+// TestConcurrentSearchDuringIndexing tests that search works during indexing
+func (s *IndexingTestSuite) TestConcurrentSearchDuringIndexing() {
+	// Pre-populate with some data
+	config := &indexer.Config{
+		IncludeTests:       true,
+		IncludeVendor:      false,
+		GenerateEmbeddings: false,
+		Workers:            1, // Single worker to slow down indexing
+	}
+
+	// Initial quick index
+	_, err := s.indexer.IndexProject(s.ctx, s.fixturesDir, config)
+	s.Require().NoError(err)
+
+	project, err := s.storage.GetProject(s.ctx, s.fixturesDir)
+	s.Require().NoError(err)
+
+	// Create a new indexer for concurrent attempt
+	newIndexer := indexer.New(s.storage)
+
+	// Start indexing in background (will fail with ErrIndexingInProgress or succeed if fast)
+	indexDone := make(chan error, 1)
+	go func() {
+		_, err := newIndexer.IndexProject(s.ctx, s.fixturesDir, config)
+		indexDone <- err
+	}()
+
+	// Perform searches while indexing might be happening
+	searchCtx, cancel := context.WithTimeout(s.ctx, 2*time.Second)
+	defer cancel()
+
+	// Multiple concurrent searches
+	searchDone := make(chan error, 5)
+	for i := 0; i < 5; i++ {
+		go func() {
+			_, err := s.storage.SearchSymbols(searchCtx, "User", 10)
+			searchDone <- err
+		}()
+	}
+
+	// Collect search results
+	for i := 0; i < 5; i++ {
+		select {
+		case err := <-searchDone:
+			s.NoError(err, "searches should succeed during indexing")
+		case <-time.After(3 * time.Second):
+			s.Fail("Search timed out")
+		}
+	}
+
+	// Wait for indexing to complete
+	select {
+	case err := <-indexDone:
+		// Either success or ErrIndexingInProgress is acceptable
+		if err != nil && !errors.Is(err, indexer.ErrIndexingInProgress) {
+			s.Fail("Unexpected indexing error", "error", err)
+		}
+	case <-time.After(5 * time.Second):
+		// Indexing took too long, that's OK for this test
+		s.T().Log("Indexing still running after 5s, acceptable for concurrent test")
+	}
+
+	// Verify project is still accessible
+	_, err = s.storage.GetProject(s.ctx, s.fixturesDir)
+	s.NoError(err, "should still be able to access project")
+
+	// Verify data integrity
+	files, err := s.storage.ListFiles(s.ctx, project.ID)
+	s.NoError(err)
+	s.NotEmpty(files, "files should still be accessible")
+}
+
+// TestManyConcurrentSearches spawns 100 concurrent search queries
+func (s *IndexingTestSuite) TestManyConcurrentSearches() {
+	// Pre-populate with data
+	config := &indexer.Config{
+		IncludeTests:       true,
+		IncludeVendor:      false,
+		GenerateEmbeddings: false,
+	}
+
+	_, err := s.indexer.IndexProject(s.ctx, s.fixturesDir, config)
+	s.Require().NoError(err)
+
+	project, err := s.storage.GetProject(s.ctx, s.fixturesDir)
+	s.Require().NoError(err)
+
+	// Spawn 100 concurrent searches
+	const numSearches = 100
+	searchDone := make(chan error, numSearches)
+
+	queries := []string{"User", "Order", "Repository", "Service", "Function"}
+
+	for i := 0; i < numSearches; i++ {
+		query := queries[i%len(queries)]
+		go func(q string) {
+			_, err := s.storage.SearchSymbols(s.ctx, q, 10)
+			searchDone <- err
+		}(query)
+	}
+
+	// Collect all results
+	successCount := 0
+	failCount := 0
+	for i := 0; i < numSearches; i++ {
+		select {
+		case err := <-searchDone:
+			if err == nil {
+				successCount++
+			} else {
+				failCount++
+				s.T().Logf("Search failed: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			s.Fail("Search operation timed out", "completed", i, "total", numSearches)
+			return
+		}
+	}
+
+	s.T().Logf("Concurrent searches: %d succeeded, %d failed", successCount, failCount)
+	s.Equal(numSearches, successCount, "all searches should succeed")
+	s.Equal(0, failCount, "no searches should fail")
+
+	// Verify project data is still consistent
+	files, err := s.storage.ListFiles(s.ctx, project.ID)
+	s.NoError(err)
+	s.NotEmpty(files, "project data should remain consistent")
+}
+
+// TestIndexingWithEmbeddings tests full indexing pipeline with embeddings enabled
+func (s *IndexingTestSuite) TestIndexingWithEmbeddings() {
+	// Create a mock embedder
+	mockEmb := NewMockEmbedder(384)
+	indexerWithEmb := indexer.NewWithEmbedder(s.storage, mockEmb)
+
+	config := &indexer.Config{
+		IncludeTests:       true,
+		IncludeVendor:      false,
+		GenerateEmbeddings: true,
+		Workers:            2,
+		BatchSize:          10,
+		EmbeddingBatch:     30,
+	}
+
+	// Index with embeddings
+	stats, err := indexerWithEmb.IndexProject(s.ctx, s.fixturesDir, config)
+	s.Require().NoError(err, "indexing with embeddings should succeed")
+	s.NotNil(stats)
+
+	// Verify embeddings were generated
+	s.Greater(stats.FilesIndexed, 0, "should index files")
+	s.Greater(stats.ChunksCreated, 0, "should create chunks")
+	s.Greater(stats.EmbeddingsGenerated, 0, "should generate embeddings")
+	s.T().Logf("Generated %d embeddings for %d chunks", stats.EmbeddingsGenerated, stats.ChunksCreated)
+
+	// Some embeddings might fail, but most should succeed
+	if stats.EmbeddingsFailed > 0 {
+		s.T().Logf("Warning: %d embeddings failed", stats.EmbeddingsFailed)
+	}
+
+	// Verify embeddings are stored with correct dimension
+	project, err := s.storage.GetProject(s.ctx, s.fixturesDir)
+	s.Require().NoError(err)
+
+	files, err := s.storage.ListFiles(s.ctx, project.ID)
+	s.Require().NoError(err)
+	s.NotEmpty(files)
+
+	// Check embeddings for chunks
+	embeddingCount := 0
+	for _, file := range files {
+		chunks, err := s.storage.ListChunksByFile(s.ctx, file.ID)
+		s.NoError(err)
+
+		for _, chunk := range chunks {
+			emb, err := s.storage.GetEmbedding(s.ctx, chunk.ID)
+			if err == storage.ErrNotFound {
+				continue // Some chunks might not have embeddings
+			}
+			s.NoError(err)
+			s.NotNil(emb)
+			s.Equal(384, emb.Dimension, "embedding should have correct dimension")
+			s.Equal("mock", emb.Provider, "embedding should use mock provider")
+			s.Equal("mock-v1", emb.Model, "embedding should use mock model")
+			s.NotEmpty(emb.Vector, "embedding should have vector data")
+			embeddingCount++
+		}
+	}
+
+	s.Greater(embeddingCount, 0, "should have stored embeddings")
+	s.T().Logf("Verified %d embeddings in storage", embeddingCount)
+}
+
+// TestEmbeddingGenerationFailures tests graceful handling of embedding failures
+func (s *IndexingTestSuite) TestEmbeddingGenerationFailures() {
+	// Create a failing mock embedder
+	failingEmb := &FailingMockEmbedder{}
+	indexerWithEmb := indexer.NewWithEmbedder(s.storage, failingEmb)
+
+	config := &indexer.Config{
+		IncludeTests:       true,
+		IncludeVendor:      false,
+		GenerateEmbeddings: true,
+		Workers:            2,
+		BatchSize:          10,
+	}
+
+	// Index should succeed even if embeddings fail
+	stats, err := indexerWithEmb.IndexProject(s.ctx, s.fixturesDir, config)
+	s.Require().NoError(err, "indexing should succeed despite embedding failures")
+
+	// Files and chunks should still be indexed
+	s.Greater(stats.FilesIndexed, 0, "should index files")
+	s.Greater(stats.ChunksCreated, 0, "should create chunks")
+
+	// All embeddings should fail
+	s.Equal(0, stats.EmbeddingsGenerated, "no embeddings should be generated with failing embedder")
+	s.Greater(stats.EmbeddingsFailed, 0, "embeddings should be marked as failed")
+	s.NotEmpty(stats.ErrorMessages, "should record embedding errors")
+
+	s.T().Logf("Handled %d embedding failures gracefully", stats.EmbeddingsFailed)
+}
+
+// TestBenchmarkFullIndexingWithEmbeddings benchmarks full indexing with embeddings
+func (s *IndexingTestSuite) TestBenchmarkFullIndexingWithEmbeddings() {
+	mockEmb := NewMockEmbedder(384)
+	indexerWithEmb := indexer.NewWithEmbedder(s.storage, mockEmb)
+
+	config := &indexer.Config{
+		IncludeTests:       true,
+		IncludeVendor:      false,
+		GenerateEmbeddings: true,
+		Workers:            4,
+		BatchSize:          20,
+		EmbeddingBatch:     30,
+	}
+
+	start := time.Now()
+	stats, err := indexerWithEmb.IndexProject(s.ctx, s.fixturesDir, config)
+	duration := time.Since(start)
+
+	s.Require().NoError(err)
+	s.T().Logf("Full indexing with embeddings took %v", duration)
+	s.T().Logf("Stats: %d files, %d chunks, %d embeddings", stats.FilesIndexed, stats.ChunksCreated, stats.EmbeddingsGenerated)
+
+	// Verify reasonable performance (should be fast with mock embedder)
+	s.Less(duration, 10*time.Second, "indexing with mock embeddings should be fast")
+}
+
+// FailingMockEmbedder always fails
+type FailingMockEmbedder struct{}
+
+func (m *FailingMockEmbedder) GenerateEmbedding(ctx context.Context, req embedder.EmbeddingRequest) (*embedder.Embedding, error) {
+	return nil, errors.New("mock embedding failure")
+}
+
+func (m *FailingMockEmbedder) GenerateBatch(ctx context.Context, req embedder.BatchEmbeddingRequest) (*embedder.BatchEmbeddingResponse, error) {
+	return nil, errors.New("mock batch embedding failure")
+}
+
+func (m *FailingMockEmbedder) Dimension() int   { return 384 }
+func (m *FailingMockEmbedder) Provider() string { return "mock" }
+func (m *FailingMockEmbedder) Model() string    { return "mock-v1" }
+func (m *FailingMockEmbedder) Close() error     { return nil }
 
 // TestIndexingTestSuite runs the suite
 func TestIndexingTestSuite(t *testing.T) {
