@@ -487,9 +487,20 @@ func (idx *Indexer) checkFileChanged(ctx context.Context, store storage.Storage,
 		return true, nil
 	}
 
-	// File changed - delete old chunks before re-indexing
+	// File changed - delete old data before re-indexing
+	// Delete chunks (this will cascade to embeddings via FK constraint)
 	if err := store.DeleteChunksByFile(ctx, existingFile.ID); err != nil {
 		return false, fmt.Errorf("failed to delete old chunks: %w", err)
+	}
+
+	// Delete symbols (this will cascade to FTS via triggers)
+	if err := store.DeleteSymbolsByFile(ctx, existingFile.ID); err != nil {
+		return false, fmt.Errorf("failed to delete old symbols: %w", err)
+	}
+
+	// Delete imports
+	if err := store.DeleteImportsByFile(ctx, existingFile.ID); err != nil {
+		return false, fmt.Errorf("failed to delete old imports: %w", err)
 	}
 
 	return false, nil

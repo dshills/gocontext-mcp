@@ -202,21 +202,14 @@ func (s *SQLiteStorage) upsertFileWithQuerier(ctx context.Context, q querier, fi
 			parse_error = excluded.parse_error,
 			last_indexed_at = excluded.last_indexed_at,
 			updated_at = excluded.updated_at
+		RETURNING id
 	`
 	now := time.Now()
-	result, err := q.ExecContext(ctx, query,
+	err := q.QueryRowContext(ctx, query,
 		file.ProjectID, file.FilePath, file.PackageName, file.ContentHash[:],
-		file.ModTime, file.SizeBytes, file.ParseError, now, now, now)
+		file.ModTime, file.SizeBytes, file.ParseError, now, now, now).Scan(&file.ID)
 	if err != nil {
 		return fmt.Errorf("failed to upsert file: %w", err)
-	}
-
-	// Get the ID if this was an insert
-	if file.ID == 0 {
-		id, err := result.LastInsertId()
-		if err == nil {
-			file.ID = id
-		}
 	}
 
 	file.LastIndexedAt = now
@@ -481,6 +474,17 @@ func (s *SQLiteStorage) ListSymbolsByFile(ctx context.Context, fileID int64) ([]
 		symbols = append(symbols, &symbol)
 	}
 	return symbols, rows.Err()
+}
+
+func (s *SQLiteStorage) DeleteSymbolsByFile(ctx context.Context, fileID int64) error {
+	return s.deleteSymbolsByFileWithQuerier(ctx, s.querier(), fileID)
+}
+
+// deleteSymbolsByFileWithQuerier is the internal implementation that uses a querier
+func (s *SQLiteStorage) deleteSymbolsByFileWithQuerier(ctx context.Context, q querier, fileID int64) error {
+	query := `DELETE FROM symbols WHERE file_id = ?`
+	_, err := q.ExecContext(ctx, query, fileID)
+	return err
 }
 
 func (s *SQLiteStorage) SearchSymbols(ctx context.Context, query string, limit int) ([]*Symbol, error) {
@@ -818,6 +822,17 @@ func (s *SQLiteStorage) ListImportsByFile(ctx context.Context, fileID int64) ([]
 	return imports, rows.Err()
 }
 
+func (s *SQLiteStorage) DeleteImportsByFile(ctx context.Context, fileID int64) error {
+	return s.deleteImportsByFileWithQuerier(ctx, s.querier(), fileID)
+}
+
+// deleteImportsByFileWithQuerier is the internal implementation that uses a querier
+func (s *SQLiteStorage) deleteImportsByFileWithQuerier(ctx context.Context, q querier, fileID int64) error {
+	query := `DELETE FROM imports WHERE file_id = ?`
+	_, err := q.ExecContext(ctx, query, fileID)
+	return err
+}
+
 // Status operations
 
 func (s *SQLiteStorage) GetStatus(ctx context.Context, projectID int64) (*ProjectStatus, error) {
@@ -975,6 +990,10 @@ func (t *sqliteTx) ListSymbolsByFile(ctx context.Context, fileID int64) ([]*Symb
 	return t.storage.ListSymbolsByFile(ctx, fileID)
 }
 
+func (t *sqliteTx) DeleteSymbolsByFile(ctx context.Context, fileID int64) error {
+	return t.storage.deleteSymbolsByFileWithQuerier(ctx, t.querier(), fileID)
+}
+
 func (t *sqliteTx) SearchSymbols(ctx context.Context, query string, limit int) ([]*Symbol, error) {
 	return t.storage.SearchSymbols(ctx, query, limit)
 }
@@ -1021,6 +1040,10 @@ func (t *sqliteTx) UpsertImport(ctx context.Context, imp *Import) error {
 
 func (t *sqliteTx) ListImportsByFile(ctx context.Context, fileID int64) ([]*Import, error) {
 	return t.storage.ListImportsByFile(ctx, fileID)
+}
+
+func (t *sqliteTx) DeleteImportsByFile(ctx context.Context, fileID int64) error {
+	return t.storage.deleteImportsByFileWithQuerier(ctx, t.querier(), fileID)
 }
 
 func (t *sqliteTx) GetStatus(ctx context.Context, projectID int64) (*ProjectStatus, error) {

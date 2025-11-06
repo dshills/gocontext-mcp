@@ -173,3 +173,4 @@ This project uses SpecKit for specification-driven development:
 
 ## Recent Changes
 - 001-gocontext-mcp-server: Added Go 1.25.4
+- when creating binaries put them in the ./bin directory

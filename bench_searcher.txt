@@ -1,0 +1,38 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/dshills/gocontext-mcp/internal/searcher
+cpu: Apple M4 Pro
+BenchmarkHybridSearch-14           	   13514	    274085 ns/op	  150638 B/op	    1185 allocs/op
+BenchmarkVectorSearch-14           	   17107	    193211 ns/op	  148700 B/op	    1152 allocs/op
+BenchmarkKeywordSearch-14          	  105720	     33560 ns/op	     944 B/op	      17 allocs/op
+BenchmarkRRF-14                    	 1260037	      2877 ns/op	    2920 B/op	      11 allocs/op
+BenchmarkFilterApplication-14      	   29112	    123588 ns/op	   28744 B/op	      90 allocs/op
+BenchmarkQueryValidation-14        	1000000000	         1.740 ns/op	       0 B/op	       0 allocs/op
+BenchmarkQueryHashing-14           	14239572	       249.3 ns/op	     268 B/op	       6 allocs/op
+BenchmarkResultsFetching-14        	   24724	    147267 ns/op	   40557 B/op	    1017 allocs/op
+BenchmarkSearchLimits/001_results-14         	   29278	    122595 ns/op	  113838 B/op	     263 allocs/op
+BenchmarkSearchLimits/005_results-14         	   18781	    189559 ns/op	  130180 B/op	     671 allocs/op
+BenchmarkSearchLimits/010_results-14         	   13256	    264553 ns/op	  151293 B/op	    1183 allocs/op
+BenchmarkSearchLimits/020_results-14         	    9074	    403114 ns/op	  187470 B/op	    2101 allocs/op
+BenchmarkSearchLimits/050_results-14         	    9073	    400730 ns/op	  187474 B/op	    2101 allocs/op
+BenchmarkSearchLimits/100_results-14         	    8846	    402404 ns/op	  187469 B/op	    2101 allocs/op
+BenchmarkSearchQueries/short-14              	   13440	    261346 ns/op	  151271 B/op	    1196 allocs/op
+BenchmarkSearchQueries/medium-14             	   13974	    256304 ns/op	  150950 B/op	    1187 allocs/op
+BenchmarkSearchQueries/long-14               	   13374	    271815 ns/op	  151301 B/op	    1190 allocs/op
+BenchmarkSearchQueries/domain-14             	   13444	    273802 ns/op	  151765 B/op	    1186 allocs/op
+BenchmarkSearchQueries/technical-14          	   13305	    264230 ns/op	  150882 B/op	    1188 allocs/op
+BenchmarkSearchModes/vector-14               	   18355	    193192 ns/op	  148251 B/op	    1150 allocs/op
+BenchmarkSearchModes/keyword-14              	  114219	     32592 ns/op	     944 B/op	      17 allocs/op
+BenchmarkSearchModes/hybrid-14               	   13602	    262749 ns/op	  151352 B/op	    1183 allocs/op
+BenchmarkEmbeddingGeneration/len_4-14        	 3346682	      1076 ns/op	    1744 B/op	       4 allocs/op
+BenchmarkEmbeddingGeneration/len_15-14       	 3213613	      1122 ns/op	    1744 B/op	       4 allocs/op
+BenchmarkEmbeddingGeneration/len_38-14       	 3244184	      1118 ns/op	    1840 B/op	       6 allocs/op
+BenchmarkEmbeddingGeneration/len_64-14       	 3166948	      1142 ns/op	    1872 B/op	       6 allocs/op
+BenchmarkSortRankedResults/010_results-14    	37435284	        99.66 ns/op	     336 B/op	       4 allocs/op
+BenchmarkSortRankedResults/020_results-14    	21922195	       150.9 ns/op	     576 B/op	       4 allocs/op
+BenchmarkSortRankedResults/050_results-14    	11263086	       322.7 ns/op	    1376 B/op	       4 allocs/op
+BenchmarkSortRankedResults/100_results-14    	 6172678	       548.4 ns/op	    2784 B/op	       4 allocs/op
+BenchmarkSortRankedResults/200_results-14    	 3963001	       911.2 ns/op	    4960 B/op	       4 allocs/op
+BenchmarkConcurrentSearch-14                 	   10000	    312753 ns/op	  154445 B/op	    1246 allocs/op
+PASS
+ok  	github.com/dshills/gocontext-mcp/internal/searcher	154.582s

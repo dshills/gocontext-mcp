@@ -26,6 +26,7 @@ type Storage interface {
 	UpsertSymbol(ctx context.Context, symbol *Symbol) error
 	GetSymbol(ctx context.Context, symbolID int64) (*Symbol, error)
 	ListSymbolsByFile(ctx context.Context, fileID int64) ([]*Symbol, error)
+	DeleteSymbolsByFile(ctx context.Context, fileID int64) error
 	SearchSymbols(ctx context.Context, query string, limit int) ([]*Symbol, error)
 
 	// Chunk operations
@@ -46,6 +47,7 @@ type Storage interface {
 	// Import operations
 	UpsertImport(ctx context.Context, imp *Import) error
 	ListImportsByFile(ctx context.Context, fileID int64) ([]*Import, error)
+	DeleteImportsByFile(ctx context.Context, fileID int64) error
 
 	// Status operations
 	GetStatus(ctx context.Context, projectID int64) (*ProjectStatus, error)

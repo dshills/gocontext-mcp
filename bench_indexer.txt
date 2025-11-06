@@ -1,0 +1,28 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/dshills/gocontext-mcp/internal/indexer
+cpu: Apple M4 Pro
+BenchmarkIndexProject-14                	    1090	   3198949 ns/op	  463002 B/op	    5453 allocs/op
+BenchmarkIndexProjectNoEmbeddings-14    	    1240	   2910693 ns/op	  378102 B/op	    4916 allocs/op
+BenchmarkIncrementalIndex-14            	   18282	    207220 ns/op	  141087 B/op	    1002 allocs/op
+BenchmarkFileDiscovery-14               	  258652	     14738 ns/op	    3112 B/op	      26 allocs/op
+BenchmarkParseFile-14                   	  114217	     31703 ns/op	   35101 B/op	     591 allocs/op
+BenchmarkChunkFile-14                   	  330439	     11057 ns/op	    7848 B/op	      49 allocs/op
+BenchmarkEmbeddingGeneration/001_chunks-14         	10492622	       342.5 ns/op	    1816 B/op	       6 allocs/op
+BenchmarkEmbeddingGeneration/010_chunks-14         	 1000000	      3141 ns/op	   17584 B/op	      42 allocs/op
+BenchmarkEmbeddingGeneration/030_chunks-14         	  393747	      9710 ns/op	   52624 B/op	     122 allocs/op
+BenchmarkEmbeddingGeneration/050_chunks-14         	  211064	     16046 ns/op	   87680 B/op	     202 allocs/op
+BenchmarkEmbeddingGeneration/100_chunks-14         	  114900	     31254 ns/op	  175361 B/op	     402 allocs/op
+BenchmarkWorkerCounts/01_workers-14                	    1282	   2796714 ns/op	  378104 B/op	    4916 allocs/op
+BenchmarkWorkerCounts/02_workers-14                	    1260	   2792246 ns/op	  378091 B/op	    4916 allocs/op
+BenchmarkWorkerCounts/04_workers-14                	    1286	   2790027 ns/op	  378084 B/op	    4916 allocs/op
+BenchmarkWorkerCounts/08_workers-14                	    1298	   2797611 ns/op	  378113 B/op	    4916 allocs/op
+BenchmarkWorkerCounts/16_workers-14                	    1322	   3293837 ns/op	  378093 B/op	    4915 allocs/op
+BenchmarkBatchSizes/005_batch-14                   	    1207	   2803248 ns/op	  378089 B/op	    4915 allocs/op
+BenchmarkBatchSizes/010_batch-14                   	    1320	   2911478 ns/op	  378125 B/op	    4916 allocs/op
+BenchmarkBatchSizes/020_batch-14                   	    1176	   3017773 ns/op	  378095 B/op	    4916 allocs/op
+BenchmarkBatchSizes/050_batch-14                   	    1172	   2958661 ns/op	  378078 B/op	    4916 allocs/op
+BenchmarkBatchSizes/100_batch-14                   	    1282	   2869724 ns/op	  378456 B/op	    4916 allocs/op
+BenchmarkFileHashing-14                            	  253724	     28339 ns/op	   33344 B/op	       8 allocs/op
+PASS
+ok  	github.com/dshills/gocontext-mcp/internal/indexer	109.953s
