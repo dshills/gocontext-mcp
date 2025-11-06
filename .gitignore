@@ -33,6 +33,13 @@ coverage.out
 coverage.html
 *.coverprofile
 
+# Profiling files
+*.prof
+cpu.prof
+mem.prof
+block.prof
+mutex.prof
+
 # Backup and temporary files
 *.bak
 *.bak[0-9]
