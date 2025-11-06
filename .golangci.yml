@@ -1,4 +1,4 @@
-# GoFlow golangci-lint configuration
+# GoContext MCP Server golangci-lint configuration
 run:
   timeout: 5m
   tests: true
