@@ -10,7 +10,7 @@ import (
 
 const (
 	// CurrentSchemaVersion tracks the database schema version
-	CurrentSchemaVersion = "1.0.0"
+	CurrentSchemaVersion = "1.0.1"
 )
 
 // Migration represents a database schema migration
@@ -26,6 +26,11 @@ var AllMigrations = []Migration{
 		Version: "1.0.0",
 		Up:      migrationV1Up,
 		Down:    migrationV1Down,
+	},
+	{
+		Version: "1.0.1",
+		Up:      migrationV101Up,
+		Down:    migrationV101Down,
 	},
 }
 
@@ -250,6 +255,296 @@ DROP TABLE IF EXISTS projects;
 DROP TABLE IF EXISTS schema_version;
 `
 
+const migrationV101Up = `
+-- Fix symbols and chunks tables to use UNIQUE constraints instead of UNIQUE INDEX
+-- This is required for ON CONFLICT to work properly in UPSERT operations
+
+-- Fix symbols table
+DROP TRIGGER IF EXISTS symbols_au;
+DROP TRIGGER IF EXISTS symbols_ad;
+DROP TRIGGER IF EXISTS symbols_ai;
+DROP TABLE IF EXISTS symbols_fts;
+
+CREATE TABLE symbols_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    package_name TEXT NOT NULL,
+    signature TEXT,
+    doc_comment TEXT,
+    scope TEXT,
+    receiver TEXT,
+    start_line INTEGER,
+    start_col INTEGER,
+    end_line INTEGER,
+    end_col INTEGER,
+    is_aggregate_root BOOLEAN DEFAULT 0,
+    is_entity BOOLEAN DEFAULT 0,
+    is_value_object BOOLEAN DEFAULT 0,
+    is_repository BOOLEAN DEFAULT 0,
+    is_service BOOLEAN DEFAULT 0,
+    is_command BOOLEAN DEFAULT 0,
+    is_query BOOLEAN DEFAULT 0,
+    is_handler BOOLEAN DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+    UNIQUE(file_id, name, start_line, start_col)
+);
+
+-- Copy existing data if symbols table exists and has rows
+INSERT INTO symbols_new
+SELECT id, file_id, name, kind, package_name, signature, doc_comment, scope, receiver,
+       start_line, start_col, end_line, end_col,
+       is_aggregate_root, is_entity, is_value_object, is_repository,
+       is_service, is_command, is_query, is_handler, created_at
+FROM symbols;
+
+DROP TABLE symbols;
+ALTER TABLE symbols_new RENAME TO symbols;
+
+CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
+CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
+CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
+CREATE INDEX IF NOT EXISTS idx_symbols_package ON symbols(package_name);
+CREATE INDEX IF NOT EXISTS idx_symbols_ddd ON symbols(is_aggregate_root, is_entity, is_value_object);
+CREATE INDEX IF NOT EXISTS idx_symbols_cqrs ON symbols(is_command, is_query, is_handler);
+
+-- TODO: Consider using content='symbols' with content_rowid='id' for better join performance
+-- instead of contentless table with UNINDEXED symbol_id (requires migration)
+CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+    symbol_id UNINDEXED,
+    name, signature, doc_comment
+);
+
+-- Rebuild FTS index from existing data
+INSERT INTO symbols_fts(symbol_id, name, signature, doc_comment)
+SELECT id, name, signature, doc_comment FROM symbols;
+
+CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
+    INSERT INTO symbols_fts(symbol_id, name, signature, doc_comment)
+    VALUES (new.id, new.name, new.signature, new.doc_comment);
+END;
+
+CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
+    DELETE FROM symbols_fts WHERE symbol_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
+    UPDATE symbols_fts SET
+        name = new.name,
+        signature = new.signature,
+        doc_comment = new.doc_comment
+    WHERE symbol_id = new.id;
+END;
+
+-- Fix chunks table
+DROP TRIGGER IF EXISTS chunks_au;
+DROP TRIGGER IF EXISTS chunks_ad;
+DROP TRIGGER IF EXISTS chunks_ai;
+DROP TABLE IF EXISTS chunks_fts;
+
+CREATE TABLE chunks_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL,
+    symbol_id INTEGER,
+    content TEXT NOT NULL,
+    content_hash BLOB NOT NULL,
+    token_count INTEGER,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    context_before TEXT,
+    context_after TEXT,
+    chunk_type TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+    FOREIGN KEY (symbol_id) REFERENCES symbols(id) ON DELETE CASCADE,
+    UNIQUE(file_id, start_line, end_line)
+);
+
+-- Copy existing data if chunks table exists and has rows
+INSERT INTO chunks_new
+SELECT id, file_id, symbol_id, content, content_hash, token_count,
+       start_line, end_line, context_before, context_after, chunk_type,
+       created_at, updated_at
+FROM chunks;
+
+DROP TABLE chunks;
+ALTER TABLE chunks_new RENAME TO chunks;
+
+CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_symbol ON chunks(symbol_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(content_hash);
+CREATE INDEX IF NOT EXISTS idx_chunks_type ON chunks(chunk_type);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+    chunk_id UNINDEXED,
+    content, context_before, context_after
+);
+
+-- Rebuild FTS index from existing data
+INSERT INTO chunks_fts(chunk_id, content, context_before, context_after)
+SELECT id, content, context_before, context_after FROM chunks;
+
+CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+    INSERT INTO chunks_fts(chunk_id, content, context_before, context_after)
+    VALUES (new.id, new.content, new.context_before, new.context_after);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+    DELETE FROM chunks_fts WHERE chunk_id = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
+    UPDATE chunks_fts SET
+        content = new.content,
+        context_before = new.context_before,
+        context_after = new.context_after
+    WHERE chunk_id = new.id;
+END;
+`
+
+const migrationV101Down = `
+-- Rollback v1.0.1 migration (restore UNIQUE INDEX approach)
+-- This is mainly for testing purposes
+
+-- Rollback symbols table
+DROP TRIGGER IF EXISTS symbols_au;
+DROP TRIGGER IF EXISTS symbols_ad;
+DROP TRIGGER IF EXISTS symbols_ai;
+DROP TABLE IF EXISTS symbols_fts;
+
+CREATE TABLE IF NOT EXISTS symbols_old (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    package_name TEXT NOT NULL,
+    signature TEXT,
+    doc_comment TEXT,
+    scope TEXT,
+    receiver TEXT,
+    start_line INTEGER,
+    start_col INTEGER,
+    end_line INTEGER,
+    end_col INTEGER,
+    is_aggregate_root BOOLEAN DEFAULT 0,
+    is_entity BOOLEAN DEFAULT 0,
+    is_value_object BOOLEAN DEFAULT 0,
+    is_repository BOOLEAN DEFAULT 0,
+    is_service BOOLEAN DEFAULT 0,
+    is_command BOOLEAN DEFAULT 0,
+    is_query BOOLEAN DEFAULT 0,
+    is_handler BOOLEAN DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
+);
+
+INSERT INTO symbols_old
+SELECT id, file_id, name, kind, package_name, signature, doc_comment, scope, receiver,
+       start_line, start_col, end_line, end_col,
+       is_aggregate_root, is_entity, is_value_object, is_repository,
+       is_service, is_command, is_query, is_handler, created_at
+FROM symbols;
+
+DROP TABLE symbols;
+ALTER TABLE symbols_old RENAME TO symbols;
+
+CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
+CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
+CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
+CREATE INDEX IF NOT EXISTS idx_symbols_package ON symbols(package_name);
+CREATE INDEX IF NOT EXISTS idx_symbols_ddd ON symbols(is_aggregate_root, is_entity, is_value_object);
+CREATE INDEX IF NOT EXISTS idx_symbols_cqrs ON symbols(is_command, is_query, is_handler);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_unique ON symbols(file_id, name, start_line, start_col);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+    name, signature, doc_comment,
+    content='symbols',
+    content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
+    INSERT INTO symbols_fts(rowid, name, signature, doc_comment)
+    VALUES (new.id, new.name, new.signature, new.doc_comment);
+END;
+
+CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
+    DELETE FROM symbols_fts WHERE rowid = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
+    UPDATE symbols_fts SET
+        name = new.name,
+        signature = new.signature,
+        doc_comment = new.doc_comment
+    WHERE rowid = new.id;
+END;
+
+-- Rollback chunks table
+DROP TRIGGER IF EXISTS chunks_au;
+DROP TRIGGER IF EXISTS chunks_ad;
+DROP TRIGGER IF EXISTS chunks_ai;
+DROP TABLE IF EXISTS chunks_fts;
+
+CREATE TABLE IF NOT EXISTS chunks_old (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL,
+    symbol_id INTEGER,
+    content TEXT NOT NULL,
+    content_hash BLOB NOT NULL,
+    token_count INTEGER,
+    start_line INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    context_before TEXT,
+    context_after TEXT,
+    chunk_type TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE,
+    FOREIGN KEY (symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
+);
+
+INSERT INTO chunks_old
+SELECT id, file_id, symbol_id, content, content_hash, token_count,
+       start_line, end_line, context_before, context_after, chunk_type,
+       created_at, updated_at
+FROM chunks;
+
+DROP TABLE chunks;
+ALTER TABLE chunks_old RENAME TO chunks;
+
+CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_symbol ON chunks(symbol_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(content_hash);
+CREATE INDEX IF NOT EXISTS idx_chunks_type ON chunks(chunk_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_unique ON chunks(file_id, start_line, end_line);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+    content, context_before, context_after,
+    content='chunks',
+    content_rowid='id'
+);
+
+CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
+    INSERT INTO chunks_fts(rowid, content, context_before, context_after)
+    VALUES (new.id, new.content, new.context_before, new.context_after);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+    DELETE FROM chunks_fts WHERE rowid = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
+    UPDATE chunks_fts SET
+        content = new.content,
+        context_before = new.context_before,
+        context_after = new.context_after
+    WHERE rowid = new.id;
+END;
+`
+
 // ApplyMigrations runs all pending migrations
 func ApplyMigrations(ctx context.Context, db *sql.DB) error {
 	// Check if schema_version table exists
@@ -291,16 +586,51 @@ func ApplyMigrations(ctx context.Context, db *sql.DB) error {
 			continue // Already applied
 		}
 
-		// Execute migration
-		_, err = db.ExecContext(ctx, migration.Up)
+		// Temporarily disable foreign keys for schema changes (must be done outside transaction)
+		if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+			return fmt.Errorf("failed to disable foreign keys for migration %s: %w", migration.Version, err)
+		}
+
+		// Execute migration in a transaction
+		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
+			return fmt.Errorf("failed to begin transaction for migration %s: %w", migration.Version, err)
+		}
+
+		// Execute migration
+		if _, err := tx.ExecContext(ctx, migration.Up); err != nil {
+			_ = tx.Rollback()
+			_, _ = db.ExecContext(ctx, "PRAGMA foreign_keys = ON") // Re-enable before returning
 			return fmt.Errorf("failed to apply migration %s: %w", migration.Version, err)
 		}
 
-		// Record migration
-		_, err = db.ExecContext(ctx, "INSERT INTO schema_version (version) VALUES (?)", migration.Version)
-		if err != nil {
+		// Record migration with explicit timestamp including subseconds for uniqueness
+		if _, err := tx.ExecContext(ctx, "INSERT INTO schema_version (version, applied_at) VALUES (?, strftime('%Y-%m-%d %H:%M:%f', 'now'))", migration.Version); err != nil {
+			_ = tx.Rollback()
+			_, _ = db.ExecContext(ctx, "PRAGMA foreign_keys = ON") // Re-enable before returning
 			return fmt.Errorf("failed to record migration %s: %w", migration.Version, err)
+		}
+
+		// Commit transaction
+		if err := tx.Commit(); err != nil {
+			_, _ = db.ExecContext(ctx, "PRAGMA foreign_keys = ON") // Re-enable before returning
+			return fmt.Errorf("failed to commit migration %s: %w", migration.Version, err)
+		}
+
+		// Re-enable foreign keys and validate
+		if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+			return fmt.Errorf("failed to re-enable foreign keys for migration %s: %w", migration.Version, err)
+		}
+
+		// Validate foreign key integrity (PRAGMA foreign_key_check returns rows only if there are errors)
+		rows, err := db.QueryContext(ctx, "PRAGMA foreign_key_check")
+		if err != nil {
+			return fmt.Errorf("failed to check foreign keys for migration %s: %w", migration.Version, err)
+		}
+		hasFKErrors := rows.Next()
+		_ = rows.Close()
+		if hasFKErrors {
+			return fmt.Errorf("foreign key validation failed for migration %s: constraint violations detected", migration.Version)
 		}
 
 		// Update current version for next iteration

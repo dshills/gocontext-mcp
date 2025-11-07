@@ -934,7 +934,11 @@ type Calculator struct {
 
 	// Index the file
 	var indexed, skipped, failed, symbols, chunks int32
-	storedChunks, err := idx.indexFile(ctx, store, project, filePath, &indexed, &skipped, &failed, &symbols, &chunks)
+	config := &Config{
+		GenerateEmbeddings: true,
+		ForceReindex:       false,
+	}
+	storedChunks, err := idx.indexFile(ctx, store, project, filePath, config, &indexed, &skipped, &failed, &symbols, &chunks)
 
 	require.NoError(t, err)
 	assert.NotEmpty(t, storedChunks)
@@ -980,7 +984,11 @@ func main() {
 
 	// Index the file
 	var indexed, skipped, failed, symbols, chunks int32
-	_, err := idx.indexFile(ctx, store, project, filePath, &indexed, &skipped, &failed, &symbols, &chunks)
+	config := &Config{
+		GenerateEmbeddings: true,
+		ForceReindex:       false,
+	}
+	_, err := idx.indexFile(ctx, store, project, filePath, config, &indexed, &skipped, &failed, &symbols, &chunks)
 
 	require.NoError(t, err)
 

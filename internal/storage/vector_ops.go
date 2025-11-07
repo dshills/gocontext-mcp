@@ -133,7 +133,7 @@ func searchText(ctx context.Context, db *sql.DB, projectID int64, query string, 
 			c.id as chunk_id,
 			bm25(chunks_fts) as score
 		FROM chunks_fts
-		INNER JOIN chunks c ON chunks_fts.rowid = c.id
+		INNER JOIN chunks c ON chunks_fts.chunk_id = c.id
 		INNER JOIN files f ON c.file_id = f.id
 		WHERE chunks_fts MATCH ?
 		AND f.project_id = ?

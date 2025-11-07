@@ -487,8 +487,8 @@ func (s *SQLiteStorage) searchSymbolsWithQuerier(ctx context.Context, q querier,
 		       s.is_aggregate_root, s.is_entity, s.is_value_object, s.is_repository,
 		       s.is_service, s.is_command, s.is_query, s.is_handler, s.created_at
 		FROM symbols s
-		JOIN symbols_fts fts ON s.id = fts.rowid
-		WHERE symbols_fts MATCH ?
+		JOIN symbols_fts fts ON s.id = fts.symbol_id
+		WHERE fts MATCH ?
 		ORDER BY rank
 		LIMIT ?
 	`

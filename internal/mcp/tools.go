@@ -69,9 +69,12 @@ func (s *Server) handleIndexCodebase(ctx context.Context, request mcp.CallToolRe
 	includeVendor := getBoolDefault(args, "include_vendor", false)
 
 	// Create indexer config
+	// Note: GenerateEmbeddings defaults to true for full semantic search capability
 	config := &indexer.Config{
-		IncludeTests:  includeTests,
-		IncludeVendor: includeVendor,
+		IncludeTests:       includeTests,
+		IncludeVendor:      includeVendor,
+		GenerateEmbeddings: true, // Default: always generate embeddings for semantic search
+		ForceReindex:       forceReindex,
 	}
 
 	// Run indexing

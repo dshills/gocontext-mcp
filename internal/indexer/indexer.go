@@ -48,6 +48,7 @@ type Config struct {
 	IncludeTests       bool // Whether to index test files (default: true)
 	IncludeVendor      bool // Whether to index vendor directory (default: false)
 	GenerateEmbeddings bool // Whether to generate embeddings (default: true)
+	ForceReindex       bool // Whether to force reindex all files ignoring hashes (default: false)
 }
 
 // Progress tracks indexing progress
@@ -321,7 +322,7 @@ func (idx *Indexer) indexBatch(ctx context.Context, project *storage.Project, fi
 			// Acquire semaphore
 		}
 
-		fileChunks, err := idx.indexFile(ctx, tx, project, filePath, indexed, skipped, failed, symbols, chunks)
+		fileChunks, err := idx.indexFile(ctx, tx, project, filePath, config, indexed, skipped, failed, symbols, chunks)
 		<-semaphore // Release semaphore
 
 		if err != nil {
@@ -374,7 +375,7 @@ func (idx *Indexer) indexBatch(ctx context.Context, project *storage.Project, fi
 
 // indexFile indexes a single file and returns the stored chunks
 func (idx *Indexer) indexFile(ctx context.Context, store storage.Storage, project *storage.Project,
-	filePath string, indexed, skipped, failed, symbols, chunks *int32) ([]*storage.Chunk, error) {
+	filePath string, config *Config, indexed, skipped, failed, symbols, chunks *int32) ([]*storage.Chunk, error) {
 
 	// Compute relative path
 	relPath, err := filepath.Rel(project.RootPath, filePath)
@@ -388,13 +389,26 @@ func (idx *Indexer) indexFile(ctx context.Context, store storage.Storage, projec
 		return nil, err
 	}
 
-	// Check if file has changed and handle incremental update
-	shouldSkip, err := idx.checkFileChanged(ctx, store, project.ID, relPath, hash, skipped)
-	if err != nil {
-		return nil, err
-	}
-	if shouldSkip {
-		return nil, nil
+	// Check if file has changed and handle incremental update (unless force reindex)
+	if !config.ForceReindex {
+		shouldSkip, err := idx.checkFileChanged(ctx, store, project.ID, relPath, hash, skipped)
+		if err != nil {
+			return nil, err
+		}
+		if shouldSkip {
+			return nil, nil
+		}
+	} else {
+		// Force reindex: delete existing file and all related data (cascades to chunks, symbols, imports)
+		existingFile, err := store.GetFile(ctx, project.ID, relPath)
+		if err == nil {
+			// File exists - delete it (ON DELETE CASCADE will handle related data)
+			if err := store.DeleteFile(ctx, existingFile.ID); err != nil {
+				return nil, fmt.Errorf("failed to delete existing file for force reindex: %w", err)
+			}
+		} else if err != storage.ErrNotFound {
+			return nil, fmt.Errorf("failed to check existing file: %w", err)
+		}
 	}
 
 	// Parse the file
