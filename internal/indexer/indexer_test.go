@@ -1224,3 +1224,100 @@ func TestIndexProject_ConfigValidation(t *testing.T) {
 		})
 	}
 }
+
+// TestIndexLock_ConcurrentAcquisition tests IndexLock behavior under concurrent access.
+// Regression test for US1: Prevents race conditions when multiple goroutines attempt indexing.
+// Bug fixed: Using atomic.Int32 instead of unsafe concurrent map access.
+func TestIndexLock_ConcurrentAcquisition(t *testing.T) {
+	tests := []struct {
+		name        string
+		description string
+		testFunc    func(t *testing.T)
+	}{
+		{
+			name:        "TryAcquire succeeds when lock is available",
+			description: "First acquisition should succeed",
+			testFunc: func(t *testing.T) {
+				var lock IndexLock
+				acquired := lock.TryAcquire()
+				assert.True(t, acquired, "TryAcquire should succeed when lock is available")
+				lock.Release()
+			},
+		},
+		{
+			name:        "TryAcquire fails when lock is held",
+			description: "Second acquisition should fail while lock is held",
+			testFunc: func(t *testing.T) {
+				var lock IndexLock
+
+				// First goroutine acquires the lock
+				acquired1 := lock.TryAcquire()
+				require.True(t, acquired1, "First TryAcquire should succeed")
+
+				// Second goroutine tries to acquire while first holds it
+				acquired2 := lock.TryAcquire()
+				assert.False(t, acquired2, "Second TryAcquire should fail while lock is held")
+
+				lock.Release()
+			},
+		},
+		{
+			name:        "Release makes lock available again",
+			description: "Lock can be re-acquired after release",
+			testFunc: func(t *testing.T) {
+				var lock IndexLock
+
+				// Acquire and release
+				acquired1 := lock.TryAcquire()
+				require.True(t, acquired1)
+				lock.Release()
+
+				// Should be able to acquire again
+				acquired2 := lock.TryAcquire()
+				assert.True(t, acquired2, "Lock should be available after Release")
+				lock.Release()
+			},
+		},
+		{
+			name:        "Concurrent goroutines attempting acquisition",
+			description: "Only one goroutine should successfully acquire the lock",
+			testFunc: func(t *testing.T) {
+				var lock IndexLock
+				const numGoroutines = 100
+
+				acquired := make([]bool, numGoroutines)
+				var wg sync.WaitGroup
+				wg.Add(numGoroutines)
+
+				// Launch concurrent goroutines all trying to acquire the lock
+				for i := 0; i < numGoroutines; i++ {
+					go func(idx int) {
+						defer wg.Done()
+						acquired[idx] = lock.TryAcquire()
+					}(i)
+				}
+
+				wg.Wait()
+
+				// Count how many successfully acquired the lock
+				successCount := 0
+				for _, success := range acquired {
+					if success {
+						successCount++
+					}
+				}
+
+				assert.Equal(t, 1, successCount, "Exactly one goroutine should acquire the lock")
+
+				// Clean up: release the lock
+				lock.Release()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.testFunc(t)
+		})
+	}
+}

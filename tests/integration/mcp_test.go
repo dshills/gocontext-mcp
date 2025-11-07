@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -429,13 +430,13 @@ func (s *MCPTestSuite) validateSearchParams(args map[string]interface{}) error {
 	// Validate path
 	path, ok := args["path"].(string)
 	if !ok || path == "" {
-		return storage.ErrNotFound
+		return fmt.Errorf("path is required")
 	}
 
 	// Validate query
 	query, ok := args["query"].(string)
 	if !ok || query == "" {
-		return storage.ErrNotFound
+		return fmt.Errorf("query is required")
 	}
 
 	// Validate limit
@@ -447,11 +448,11 @@ func (s *MCPTestSuite) validateSearchParams(args map[string]interface{}) error {
 		case float64:
 			limit = int(v)
 		default:
-			return storage.ErrNotFound
+			return fmt.Errorf("invalid limit type")
 		}
 
 		if limit < 1 || limit > 100 {
-			return storage.ErrNotFound
+			return fmt.Errorf("limit must be between 1 and 100")
 		}
 	}
 
@@ -459,10 +460,10 @@ func (s *MCPTestSuite) validateSearchParams(args map[string]interface{}) error {
 	if modeVal, ok := args["search_mode"]; ok {
 		mode, ok := modeVal.(string)
 		if !ok {
-			return storage.ErrNotFound
+			return fmt.Errorf("invalid mode type")
 		}
 		if mode != "hybrid" && mode != "vector" && mode != "keyword" {
-			return storage.ErrNotFound
+			return fmt.Errorf("invalid search mode")
 		}
 	}
 

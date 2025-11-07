@@ -18,8 +18,14 @@ package storage
 // Driver used: github.com/mattn/go-sqlite3
 
 import (
+	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/mattn/go-sqlite3"
 )
+
+func init() {
+	// Auto-load sqlite-vec extension for all database connections
+	sqlite_vec.Auto()
+}
 
 const (
 	// DriverName is the SQLite driver to use

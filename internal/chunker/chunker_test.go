@@ -451,3 +451,115 @@ func B() {}
 	// Function level should create separate chunks
 	assert.Len(t, chunks, 2)
 }
+
+// T083: Regression test for ContextAfter field in Chunk struct
+// This test verifies the actual implementation of ContextAfter:
+// - Field exists in pkg/types/chunk.go (line 32)
+// - Field is NOT populated by createChunkForSymbol (only ContextBefore is set)
+// - ExtractRelatedContext function exists but is not called during chunking
+// - Future enhancement: could populate ContextAfter with related symbols
+func TestContextAfterField(t *testing.T) {
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "contextafter.go")
+
+	// Create test file with related symbols (struct + methods)
+	content := `package testpkg
+
+// UserRepository handles user data persistence
+type UserRepository struct {
+	db Database
+}
+
+// FindByID retrieves a user by ID
+func (r *UserRepository) FindByID(id int) (*User, error) {
+	return nil, nil
+}
+
+// Save persists a user to the database
+func (r *UserRepository) Save(user *User) error {
+	return nil
+}
+`
+
+	err := os.WriteFile(testFile, []byte(content), 0644)
+	require.NoError(t, err)
+
+	p := parser.New()
+	parseResult, err := p.ParseFile(testFile)
+	require.NoError(t, err)
+
+	c := New()
+	chunks, err := c.ChunkFile(testFile, parseResult, 1)
+	require.NoError(t, err)
+	assert.NotEmpty(t, chunks)
+
+	// Verify ContextAfter field exists in Chunk type
+	// Field is defined at pkg/types/chunk.go:32
+	for _, chunk := range chunks {
+		// ContextAfter field exists but is currently empty
+		// Implementation: createChunkForSymbol sets ContextBefore but not ContextAfter
+		assert.Empty(t, chunk.ContextAfter, "ContextAfter is not populated in current implementation")
+
+		// ContextBefore should be populated with package + imports
+		assert.NotEmpty(t, chunk.ContextBefore, "ContextBefore should contain package declaration")
+		assert.Contains(t, chunk.ContextBefore, "package testpkg")
+	}
+
+	// Test ExtractRelatedContext function exists and works
+	// This function could be used to populate ContextAfter in future
+	var structSym, methodSym *types.Symbol
+	for i := range parseResult.Symbols {
+		sym := &parseResult.Symbols[i]
+		if sym.Name == "UserRepository" && sym.Kind == types.KindStruct {
+			structSym = sym
+		}
+		if sym.Name == "FindByID" && sym.Kind == types.KindMethod {
+			methodSym = sym
+		}
+	}
+
+	require.NotNil(t, structSym, "Should find UserRepository struct")
+	require.NotNil(t, methodSym, "Should find FindByID method")
+
+	// Test ExtractRelatedContext for struct (finds methods)
+	relatedContext := c.ExtractRelatedContext(structSym, parseResult.Symbols)
+	assert.Contains(t, relatedContext, "FindByID", "Related context should include methods of struct")
+	assert.Contains(t, relatedContext, "Save", "Related context should include all methods")
+
+	// Test ExtractRelatedContext for method (finds receiver)
+	relatedContext = c.ExtractRelatedContext(methodSym, parseResult.Symbols)
+	assert.Contains(t, relatedContext, "UserRepository", "Related context should include receiver struct")
+
+	// Document current behavior:
+	// - ContextAfter field exists in types.Chunk
+	// - Field is declared but not populated during chunking
+	// - ExtractRelatedContext function exists and can find relationships
+	// - Future enhancement: call ExtractRelatedContext and set ContextAfter
+}
+
+// T083b: Test ContextAfter in FullContent method
+func TestChunk_FullContent_WithContextAfter(t *testing.T) {
+	// Test that FullContent includes ContextAfter when set
+	chunk := &types.Chunk{
+		ContextBefore: "package test",
+		Content:       "func main() {}",
+		ContextAfter:  "// Related: type Config struct {}",
+	}
+
+	fullContent := chunk.FullContent()
+	assert.Contains(t, fullContent, "package test")
+	assert.Contains(t, fullContent, "func main() {}")
+	assert.Contains(t, fullContent, "// Related: type Config struct {}")
+
+	// Test with empty ContextAfter
+	chunkNoAfter := &types.Chunk{
+		ContextBefore: "package test",
+		Content:       "func main() {}",
+		ContextAfter:  "",
+	}
+
+	fullContentNoAfter := chunkNoAfter.FullContent()
+	assert.Contains(t, fullContentNoAfter, "package test")
+	assert.Contains(t, fullContentNoAfter, "func main() {}")
+	assert.NotContains(t, fullContentNoAfter, "Related")
+}

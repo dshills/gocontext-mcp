@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	lru "github.com/hashicorp/golang-lru/v2"
+
 	"github.com/dshills/gocontext-mcp/internal/embedder"
 	"github.com/dshills/gocontext-mcp/internal/storage"
 	"github.com/dshills/gocontext-mcp/pkg/types"
@@ -657,7 +659,15 @@ func TestComputeQueryHash(t *testing.T) {
 
 // TestCheckCache tests cache lookup (currently stubbed)
 func TestCheckCache(t *testing.T) {
-	s := &Searcher{}
+	// Initialize cache properly
+	cache, err := lru.New[[32]byte, *cacheEntry](1000)
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+
+	s := &Searcher{
+		cache: cache,
+	}
 	ctx := context.Background()
 
 	req := SearchRequest{
@@ -667,21 +677,29 @@ func TestCheckCache(t *testing.T) {
 		UseCache:  true,
 	}
 
-	// Cache is stubbed to always return not found
+	// Cache is empty so should return cache miss error
 	resp, err := s.checkCache(ctx, req)
 
 	if err == nil {
-		t.Error("expected error from stubbed cache")
+		t.Error("expected error from empty cache")
 	}
 
 	if resp != nil {
-		t.Error("expected nil response from stubbed cache")
+		t.Error("expected nil response from empty cache")
 	}
 }
 
 // TestStoreInCache tests cache storage (currently stubbed)
 func TestStoreInCache(t *testing.T) {
-	s := &Searcher{}
+	// Initialize cache properly
+	cache, err := lru.New[[32]byte, *cacheEntry](1000)
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+
+	s := &Searcher{
+		cache: cache,
+	}
 	ctx := context.Background()
 
 	req := SearchRequest{
@@ -695,32 +713,44 @@ func TestStoreInCache(t *testing.T) {
 		TotalResults: 0,
 	}
 
-	// Cache storage is stubbed to be no-op
-	err := s.storeInCache(ctx, req, resp)
+	// Cache storage should work with initialized cache
+	err = s.storeInCache(ctx, req, resp)
 
 	if err != nil {
-		t.Errorf("unexpected error from stubbed cache: %v", err)
+		t.Errorf("unexpected error from cache storage: %v", err)
 	}
 }
 
 // TestInvalidateCache tests cache invalidation (stubbed)
 func TestInvalidateCache(t *testing.T) {
-	s := &Searcher{}
+	// Initialize cache properly
+	cache, err := lru.New[[32]byte, *cacheEntry](1000)
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+
+	s := &Searcher{
+		cache: cache,
+	}
 	ctx := context.Background()
 
-	err := s.InvalidateCache(ctx, 1)
+	err = s.InvalidateCache(ctx, 1)
 
 	if err != nil {
-		t.Errorf("unexpected error from stubbed InvalidateCache: %v", err)
+		t.Errorf("unexpected error from cache invalidation: %v", err)
 	}
 }
 
 // TestEvictLRU tests LRU eviction (stubbed)
 func TestEvictLRU(t *testing.T) {
-	s := &Searcher{}
+	cache, err := lru.New[[32]byte, *cacheEntry](10)
+	if err != nil {
+		t.Fatalf("failed to create cache: %v", err)
+	}
+	s := &Searcher{cache: cache}
 	ctx := context.Background()
 
-	err := s.EvictLRU(ctx, 100)
+	err = s.EvictLRU(ctx, 100)
 
 	if err != nil {
 		t.Errorf("unexpected error from stubbed EvictLRU: %v", err)
@@ -1212,4 +1242,316 @@ func TestNilEmbedderValidation(t *testing.T) {
 	if err.Error() != expectedMsg {
 		t.Errorf("expected error message %q, got %q", expectedMsg, err.Error())
 	}
+}
+
+// T027: Regression test for nil embedder validation
+// Tests that runVectorSearch returns descriptive error when embedder is nil
+// and doesn't panic on nil embedder
+func TestT027_NilEmbedderValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		embedder  embedder.Embedder
+		mode      SearchMode
+		wantError string
+	}{
+		{
+			name:      "nil embedder in vector search",
+			embedder:  nil,
+			mode:      SearchModeVector,
+			wantError: "embedder not initialized",
+		},
+		{
+			name:      "nil embedder in hybrid search",
+			embedder:  nil,
+			mode:      SearchModeHybrid,
+			wantError: "embedder not initialized",
+		},
+		{
+			name:      "valid embedder should succeed",
+			embedder:  &mockEmbedder{},
+			mode:      SearchModeKeyword, // Use keyword mode to avoid embedder call
+			wantError: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := storage.NewSQLiteStorage(":memory:")
+			if err != nil {
+				t.Fatalf("failed to create storage: %v", err)
+			}
+			defer store.Close()
+
+			// Create searcher with potentially nil embedder
+			s := NewSearcher(store, tt.embedder)
+
+			// Create test project
+			ctx := context.Background()
+			project := &storage.Project{
+				RootPath:     "/test",
+				ModuleName:   "test",
+				GoVersion:    "1.23",
+				IndexVersion: "1.0.0",
+			}
+			if err := store.CreateProject(ctx, project); err != nil {
+				t.Fatalf("CreateProject failed: %v", err)
+			}
+
+			req := SearchRequest{
+				Query:     "test query",
+				Limit:     10,
+				Mode:      tt.mode,
+				ProjectID: project.ID,
+			}
+
+			// Test should not panic
+			_, err = s.Search(ctx, req)
+
+			if tt.wantError != "" {
+				if err == nil {
+					t.Fatalf("expected error %q, got nil", tt.wantError)
+				}
+				if err.Error() != tt.wantError {
+					t.Errorf("expected error message %q, got %q", tt.wantError, err.Error())
+				}
+			} else if err != nil && tt.mode == SearchModeKeyword {
+				// Keyword mode with valid embedder might fail if no data, that's ok
+				// We're just testing it doesn't panic
+			}
+		})
+	}
+}
+
+// T029: Integration test for query result caching
+func TestT029_QueryResultCaching(t *testing.T) {
+	search, store, project := setupTestSearcher(t)
+	ctx := context.Background()
+
+	// Setup: Create test data
+	_, chunk := createTestFileAndChunk(t, store, project, "cache.go", "func CacheTest() {}")
+	addTestEmbedding(t, store, chunk.ID)
+
+	t.Run("cache hit returns cached results", func(t *testing.T) {
+		req := SearchRequest{
+			Query:     "cache test unique query",
+			Limit:     10,
+			Mode:      SearchModeVector,
+			ProjectID: project.ID,
+			UseCache:  true,
+			CacheTTL:  1 * time.Hour,
+		}
+
+		// First request - cache miss
+		resp1, err := search.Search(ctx, req)
+		if err != nil {
+			t.Fatalf("first search failed: %v", err)
+		}
+		if resp1.CacheHit {
+			t.Error("expected first request to be cache miss")
+		}
+
+		// Second request - should be cache hit
+		resp2, err := search.Search(ctx, req)
+		if err != nil {
+			t.Fatalf("second search failed: %v", err)
+		}
+		if !resp2.CacheHit {
+			t.Error("expected second request to be cache hit")
+		}
+
+		// Verify results are identical
+		if len(resp1.Results) != len(resp2.Results) {
+			t.Errorf("cached results length mismatch: got %d, want %d", len(resp2.Results), len(resp1.Results))
+		}
+	})
+
+	t.Run("cache miss returns error", func(t *testing.T) {
+		req := SearchRequest{
+			Query:     "nonexistent query xyz123",
+			Limit:     10,
+			Mode:      SearchModeVector,
+			ProjectID: project.ID,
+			UseCache:  true,
+		}
+
+		// checkCache should return error for cache miss
+		_, err := search.checkCache(ctx, req)
+		if err == nil {
+			t.Error("expected cache miss error")
+		}
+	})
+
+	t.Run("cache expiration removes stale entries", func(t *testing.T) {
+		req := SearchRequest{
+			Query:     "expiring query",
+			Limit:     10,
+			Mode:      SearchModeVector,
+			ProjectID: project.ID,
+			UseCache:  true,
+			CacheTTL:  1 * time.Millisecond, // Very short TTL
+		}
+
+		// First request - cache miss
+		resp1, err := search.Search(ctx, req)
+		if err != nil {
+			t.Fatalf("first search failed: %v", err)
+		}
+		if resp1.CacheHit {
+			t.Error("expected first request to be cache miss")
+		}
+
+		// Wait for cache to expire
+		time.Sleep(10 * time.Millisecond)
+
+		// Second request - should be cache miss due to expiration
+		resp2, err := search.Search(ctx, req)
+		if err != nil {
+			t.Fatalf("second search failed: %v", err)
+		}
+		if resp2.CacheHit {
+			t.Error("expected cache miss after expiration")
+		}
+	})
+
+	t.Run("deep copy prevents mutation", func(t *testing.T) {
+		req := SearchRequest{
+			Query:     "mutation test query",
+			Limit:     10,
+			Mode:      SearchModeVector,
+			ProjectID: project.ID,
+			UseCache:  true,
+			CacheTTL:  1 * time.Hour,
+		}
+
+		// First request
+		resp1, err := search.Search(ctx, req)
+		if err != nil {
+			t.Fatalf("first search failed: %v", err)
+		}
+
+		// Mutate the response
+		if len(resp1.Results) > 0 {
+			resp1.Results[0].Content = "MUTATED"
+		}
+
+		// Second request - should get unmodified cached copy
+		resp2, err := search.Search(ctx, req)
+		if err != nil {
+			t.Fatalf("second search failed: %v", err)
+		}
+
+		if len(resp2.Results) > 0 && resp2.Results[0].Content == "MUTATED" {
+			t.Error("cache mutation detected - deep copy not working")
+		}
+	})
+}
+
+// T031: Test for channel timeout handling
+func TestT031_ChannelTimeoutHandling(t *testing.T) {
+	t.Run("runVectorSearch doesn't block on channel send when context cancelled", func(t *testing.T) {
+		store, err := storage.NewSQLiteStorage(":memory:")
+		if err != nil {
+			t.Fatalf("failed to create storage: %v", err)
+		}
+		defer store.Close()
+
+		// Create embedder
+		embed := &mockEmbedder{}
+		search := NewSearcher(store, embed)
+
+		// Create cancelled context
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		req := SearchRequest{
+			Query:     "test",
+			Limit:     10,
+			Mode:      SearchModeVector,
+			ProjectID: 1,
+		}
+
+		// Create unbuffered channel and don't read from it
+		// This tests that the select statement in runVectorSearch
+		// prevents blocking on the send
+		resultChan := make(chan searchResult)
+
+		done := make(chan bool, 1)
+		go func() {
+			search.runVectorSearch(ctx, req, resultChan)
+			done <- true
+		}()
+
+		// Goroutine should complete without blocking
+		select {
+		case <-done:
+			// Success - goroutine completed without blocking on channel send
+		case <-time.After(1 * time.Second):
+			t.Error("runVectorSearch blocked on channel send despite cancelled context")
+		}
+	})
+
+	t.Run("runTextSearch doesn't block on channel send when context cancelled", func(t *testing.T) {
+		store, err := storage.NewSQLiteStorage(":memory:")
+		if err != nil {
+			t.Fatalf("failed to create storage: %v", err)
+		}
+		defer store.Close()
+
+		search := NewSearcher(store, &mockEmbedder{})
+
+		// Create cancelled context
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		req := SearchRequest{
+			Query:     "test",
+			Limit:     10,
+			Mode:      SearchModeKeyword,
+			ProjectID: 1,
+		}
+
+		// Create unbuffered channel and don't read from it
+		resultChan := make(chan searchResult)
+
+		done := make(chan bool, 1)
+		go func() {
+			search.runTextSearch(ctx, req, resultChan)
+			done <- true
+		}()
+
+		// Goroutine should complete without blocking
+		select {
+		case <-done:
+			// Success - goroutine completed without blocking on channel send
+		case <-time.After(1 * time.Second):
+			t.Error("runTextSearch blocked on channel send despite cancelled context")
+		}
+	})
+
+	t.Run("hybrid search completes without deadlock", func(t *testing.T) {
+		search, store, project := setupTestSearcher(t)
+		ctx := context.Background()
+
+		// Create test data
+		_, chunk := createTestFileAndChunk(t, store, project, "test.go", "func Test() {}")
+		addTestEmbedding(t, store, chunk.ID)
+
+		req := SearchRequest{
+			Query:     "test",
+			Limit:     10,
+			Mode:      SearchModeHybrid,
+			ProjectID: project.ID,
+		}
+
+		// Use context with timeout to ensure test doesn't hang
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		// This should complete without blocking or deadlock
+		_, err := search.Search(ctx, req)
+		if err != nil {
+			// Error is ok, we're just testing it doesn't deadlock
+			t.Logf("search completed with error: %v", err)
+		}
+	})
 }

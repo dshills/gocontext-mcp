@@ -5,7 +5,7 @@ import "context"
 // OrderAggregate represents an order aggregate root
 type OrderAggregate struct {
 	ID     int64
-	Items  []OrderItem
+	Items  []OrderItemVO
 	Status string
 }
 

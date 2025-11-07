@@ -509,3 +509,54 @@ func TestUpsertImport(t *testing.T) {
 	require.NoError(t, err)
 	assert.Greater(t, imp.ID, int64(0))
 }
+
+// TestNewSQLiteStorage_PRAGMAFailure tests that database connection is properly closed on PRAGMA failure.
+// Regression test for US1: Prevents connection leaks when database initialization fails.
+// Bug fixed: Added defer db.Close() to clean up connection if PRAGMA execution fails.
+func TestNewSQLiteStorage_PRAGMAFailure(t *testing.T) {
+	tests := []struct {
+		name        string
+		dbPath      string
+		expectError bool
+		description string
+	}{
+		{
+			name:        "Invalid database path causes PRAGMA failure",
+			dbPath:      "/invalid/path/that/does/not/exist/test.db",
+			expectError: true,
+			description: "Non-existent directory should fail to create database",
+		},
+		{
+			name:        "Valid memory database succeeds",
+			dbPath:      ":memory:",
+			expectError: false,
+			description: "In-memory database should succeed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			storage, err := NewSQLiteStorage(tt.dbPath)
+
+			if tt.expectError {
+				// Should return error and not leak connection
+				assert.Error(t, err, "Should fail with invalid path")
+				assert.Nil(t, storage, "Storage should be nil on error")
+			} else {
+				// Should succeed
+				require.NoError(t, err, "Should succeed with valid path")
+				require.NotNil(t, storage, "Storage should not be nil")
+				defer storage.Close()
+
+				// Verify database is functional
+				ctx := context.Background()
+				project := &Project{
+					RootPath:   "/test",
+					ModuleName: "test",
+				}
+				err = storage.CreateProject(ctx, project)
+				assert.NoError(t, err, "Database should be functional")
+			}
+		})
+	}
+}

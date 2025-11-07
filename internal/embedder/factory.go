@@ -6,6 +6,13 @@ import (
 	"strings"
 )
 
+// Environment variable names for embedder configuration
+const (
+	EnvEmbeddingProvider = "GOCONTEXT_EMBEDDING_PROVIDER"
+	EnvJinaAPIKey        = "JINA_API_KEY"
+	EnvOpenAIAPIKey      = "OPENAI_API_KEY"
+)
+
 // Config holds embedder configuration
 type Config struct {
 	Provider  string
@@ -19,9 +26,9 @@ type Config struct {
 // 2. Check for API keys: JINA_API_KEY, OPENAI_API_KEY
 // 3. Default to local if no API keys found
 func NewFromEnv() (Embedder, error) {
-	provider := os.Getenv("GOCONTEXT_EMBEDDING_PROVIDER")
-	jinaKey := os.Getenv("JINA_API_KEY")
-	openaiKey := os.Getenv("OPENAI_API_KEY")
+	provider := os.Getenv(EnvEmbeddingProvider)
+	jinaKey := os.Getenv(EnvJinaAPIKey)
+	openaiKey := os.Getenv(EnvOpenAIAPIKey)
 
 	cache := NewCache(10000) // Default cache size
 
@@ -74,15 +81,15 @@ func New(cfg Config) (Embedder, error) {
 
 // DetectProvider returns the provider that would be used based on current environment
 func DetectProvider() string {
-	provider := os.Getenv("GOCONTEXT_EMBEDDING_PROVIDER")
+	provider := os.Getenv(EnvEmbeddingProvider)
 	if provider != "" {
 		return strings.ToLower(provider)
 	}
 
-	if os.Getenv("JINA_API_KEY") != "" {
+	if os.Getenv(EnvJinaAPIKey) != "" {
 		return ProviderJina
 	}
-	if os.Getenv("OPENAI_API_KEY") != "" {
+	if os.Getenv(EnvOpenAIAPIKey) != "" {
 		return ProviderOpenAI
 	}
 

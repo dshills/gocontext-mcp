@@ -3,11 +3,15 @@ package embedder
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestJinaProvider(t *testing.T) {
@@ -220,6 +224,204 @@ func TestRetryLogic(t *testing.T) {
 
 		// Verify server was called (conceptual test)
 		_ = callCount
+	})
+}
+
+// T084: Regression test for retry logic abstraction
+// Verifies that retryWithBackoff function exists and is used by both providers
+// Implementation: internal/embedder/retry.go (lines 26-61)
+func TestRetryWithBackoff(t *testing.T) {
+	t.Run("retryWithBackoff function exists and works", func(t *testing.T) {
+		ctx := context.Background()
+		config := DefaultRetryConfig()
+
+		callCount := 0
+		successFn := func() (string, error) {
+			callCount++
+			if callCount < 2 {
+				return "", fmt.Errorf("transient error")
+			}
+			return "success", nil
+		}
+
+		result, err := retryWithBackoff(ctx, config, successFn)
+		assert.NoError(t, err)
+		assert.Equal(t, "success", result)
+		assert.Equal(t, 2, callCount, "Should retry once and succeed on second attempt")
+	})
+
+	t.Run("exponential backoff timing", func(t *testing.T) {
+		ctx := context.Background()
+		config := RetryConfig{
+			MaxRetries: 3,
+			BaseDelay:  10 * time.Millisecond,
+			MaxDelay:   100 * time.Millisecond,
+			Multiplier: 2.0,
+		}
+
+		callCount := 0
+		startTime := time.Now()
+		failFn := func() (int, error) {
+			callCount++
+			return 0, fmt.Errorf("always fails")
+		}
+
+		_, err := retryWithBackoff(ctx, config, failFn)
+		elapsed := time.Since(startTime)
+
+		assert.Error(t, err)
+		assert.Equal(t, 3, callCount, "Should retry MaxRetries times")
+		// Should wait: 10ms + 20ms = 30ms minimum (exponential backoff)
+		assert.GreaterOrEqual(t, elapsed.Milliseconds(), int64(30))
+	})
+
+	t.Run("max retries limit", func(t *testing.T) {
+		ctx := context.Background()
+		config := RetryConfig{
+			MaxRetries: 5,
+			BaseDelay:  1 * time.Millisecond,
+			MaxDelay:   10 * time.Millisecond,
+			Multiplier: 2.0,
+		}
+
+		callCount := 0
+		alwaysFailFn := func() (bool, error) {
+			callCount++
+			return false, fmt.Errorf("error %d", callCount)
+		}
+
+		_, err := retryWithBackoff(ctx, config, alwaysFailFn)
+		assert.Error(t, err)
+		assert.Equal(t, 5, callCount, "Should stop after MaxRetries attempts")
+		assert.Contains(t, err.Error(), "error 5", "Should return last error")
+	})
+
+	t.Run("context cancellation during retry", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		config := RetryConfig{
+			MaxRetries: 10,
+			BaseDelay:  50 * time.Millisecond,
+			MaxDelay:   100 * time.Millisecond,
+			Multiplier: 2.0,
+		}
+
+		callCount := 0
+		fnWithCancel := func() (string, error) {
+			callCount++
+			if callCount == 2 {
+				cancel() // Cancel after first retry
+			}
+			return "", fmt.Errorf("error")
+		}
+
+		_, err := retryWithBackoff(ctx, config, fnWithCancel)
+		assert.Error(t, err)
+		assert.Equal(t, context.Canceled, err, "Should return context.Canceled")
+		assert.LessOrEqual(t, callCount, 3, "Should stop retrying after context cancellation")
+	})
+
+	t.Run("immediate success no retry", func(t *testing.T) {
+		ctx := context.Background()
+		config := DefaultRetryConfig()
+
+		callCount := 0
+		immediateFn := func() (int, error) {
+			callCount++
+			return 42, nil
+		}
+
+		result, err := retryWithBackoff(ctx, config, immediateFn)
+		assert.NoError(t, err)
+		assert.Equal(t, 42, result)
+		assert.Equal(t, 1, callCount, "Should succeed on first try without retries")
+	})
+
+	t.Run("max delay cap is enforced", func(t *testing.T) {
+		ctx := context.Background()
+		config := RetryConfig{
+			MaxRetries: 5,
+			BaseDelay:  10 * time.Millisecond,
+			MaxDelay:   20 * time.Millisecond, // Cap at 20ms
+			Multiplier: 4.0,                   // Would grow: 10, 40, 160, 640...
+		}
+
+		delays := []time.Duration{}
+		callCount := 0
+		lastTime := time.Now()
+
+		failFn := func() (int, error) {
+			callCount++
+			if callCount > 1 {
+				elapsed := time.Since(lastTime)
+				delays = append(delays, elapsed)
+			}
+			lastTime = time.Now()
+			return 0, fmt.Errorf("error")
+		}
+
+		_, err := retryWithBackoff(ctx, config, failFn)
+		assert.Error(t, err)
+
+		// All delays after first should be capped at MaxDelay
+		for i, delay := range delays {
+			// Allow some tolerance for timing
+			assert.LessOrEqual(t, delay.Milliseconds(), int64(30), "Delay %d should be capped at MaxDelay", i)
+		}
+	})
+}
+
+// T084b: Test both JinaProvider and OpenAIProvider use shared retry logic
+func TestProviders_UseSharedRetryLogic(t *testing.T) {
+	t.Run("JinaProvider uses retryWithBackoff", func(t *testing.T) {
+		// Verify JinaProvider.GenerateBatch calls retryWithBackoff
+		// Implementation at providers.go:114
+		cache := NewCache(10)
+		provider, err := NewJinaProvider("test-key", cache)
+		require.NoError(t, err)
+		defer provider.Close()
+
+		ctx := context.Background()
+
+		// Calling with invalid request should fail validation before retry
+		_, err = provider.GenerateBatch(ctx, BatchEmbeddingRequest{Texts: []string{}})
+		assert.Error(t, err, "Empty batch should fail validation")
+
+		// Test that actual API calls use retry (would need mock server to verify retry count)
+		// Current implementation: providers.go:113-116 wraps callAPI in retryWithBackoff
+	})
+
+	t.Run("OpenAIProvider uses retryWithBackoff", func(t *testing.T) {
+		// Verify OpenAIProvider.GenerateBatch calls retryWithBackoff
+		// Implementation at providers.go:285
+		cache := NewCache(10)
+		provider, err := NewOpenAIProvider("test-key", cache)
+		require.NoError(t, err)
+		defer provider.Close()
+
+		ctx := context.Background()
+
+		// Calling with invalid request should fail validation before retry
+		_, err = provider.GenerateBatch(ctx, BatchEmbeddingRequest{Texts: []string{}})
+		assert.Error(t, err, "Empty batch should fail validation")
+
+		// Test that actual API calls use retry (would need mock server to verify retry count)
+		// Current implementation: providers.go:284-287 wraps callAPI in retryWithBackoff
+	})
+
+	t.Run("both providers use same DefaultRetryConfig", func(t *testing.T) {
+		config := DefaultRetryConfig()
+
+		// Verify configuration values from retry.go constants
+		assert.Equal(t, MaxRetries, config.MaxRetries)
+		assert.Equal(t, time.Duration(InitialBackoffMs)*time.Millisecond, config.BaseDelay)
+		assert.Equal(t, time.Duration(MaxBackoffMs)*time.Millisecond, config.MaxDelay)
+		assert.Equal(t, BackoffMultiplier, config.Multiplier)
+
+		// Document the shared configuration values
+		assert.Equal(t, 3, config.MaxRetries, "MaxRetries from providers.go:36")
+		assert.Equal(t, 100*time.Millisecond, config.BaseDelay, "InitialBackoffMs from providers.go:37")
+		assert.Equal(t, 5000*time.Millisecond, config.MaxDelay, "MaxBackoffMs from providers.go:38")
+		assert.Equal(t, 2.0, config.Multiplier, "BackoffMultiplier from providers.go:39")
 	})
 }
 

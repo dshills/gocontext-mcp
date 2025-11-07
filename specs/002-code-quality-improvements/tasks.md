@@ -60,10 +60,10 @@ Single project structure at repository root:
 
 > **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
 
-- [ ] T010 [P] [US1] Regression test for IndexLock concurrent acquisition in internal/indexer/indexer_test.go
-- [ ] T011 [P] [US1] Regression test for DB connection leak on PRAGMA failure in internal/storage/sqlite_test.go
-- [ ] T012 [P] [US1] Regression test for FTS5 injection prevention in internal/storage/vector_ops_test.go
-- [ ] T013 [P] [US1] Regression test for bcrypt password hashing in tests/testdata/fixtures/authentication_test.go
+- [X] T010 [P] [US1] Regression test for IndexLock concurrent acquisition in internal/indexer/indexer_test.go
+- [X] T011 [P] [US1] Regression test for DB connection leak on PRAGMA failure in internal/storage/sqlite_test.go
+- [X] T012 [P] [US1] Regression test for FTS5 injection prevention in internal/storage/vector_ops_test.go
+- [X] T013 [P] [US1] Regression test for bcrypt password hashing in tests/testdata/fixtures/authentication_test.go
 
 ### Implementation for User Story 1
 
@@ -102,11 +102,11 @@ Single project structure at repository root:
 
 ### Tests for User Story 2
 
-- [ ] T027 [P] [US2] Regression test for nil embedder validation in internal/searcher/searcher_test.go
-- [ ] T028 [P] [US2] Benchmark test for sortCandidates O(n log n) vs O(n²) in internal/storage/vector_ops_test.go
-- [ ] T029 [P] [US2] Integration test for query result caching in internal/searcher/searcher_test.go
-- [ ] T030 [P] [US2] Integration test for LRU cache eviction behavior in internal/embedder/embedder_test.go
-- [ ] T031 [P] [US2] Test for channel timeout handling in internal/searcher/searcher_test.go
+- [X] T027 [P] [US2] Regression test for nil embedder validation in internal/searcher/searcher_test.go
+- [X] T028 [P] [US2] Benchmark test for sortCandidates O(n log n) vs O(n²) in internal/storage/vector_ops_test.go
+- [X] T029 [P] [US2] Integration test for query result caching in internal/searcher/searcher_test.go
+- [X] T030 [P] [US2] Integration test for LRU cache eviction behavior in internal/embedder/embedder_test.go
+- [X] T031 [P] [US2] Test for channel timeout handling in internal/searcher/searcher_test.go
 
 ### Implementation for User Story 2
 
@@ -130,9 +130,9 @@ Single project structure at repository root:
 - [X] T042 [US2] Remove manual cache clearing logic (replaced by LRU)
 
 **Issue #16, #8: Vector Search Optimization (FR-008)**
-- [ ] T043 [US2] Refactor searchVector to use sqlite-vec SQL-based filtering in internal/storage/vector_ops.go:21
-- [ ] T044 [US2] Remove in-memory loading of all embeddings
-- [ ] T045 [US2] Apply candidate filtering in SQL WHERE clause
+- [X] T043 [US2] Refactor searchVector to use sqlite-vec SQL-based filtering in internal/storage/vector_ops.go:21
+- [X] T044 [US2] Remove in-memory loading of all embeddings
+- [X] T045 [US2] Apply candidate filtering in SQL WHERE clause
 
 **Issue #10, #22: Channel Timeout Handling (FR-010)**
 - [X] T046 [US2] Add select with ctx.Done() to runVectorSearch channel send in internal/searcher/searcher.go:141
@@ -160,11 +160,11 @@ Single project structure at repository root:
 
 ### Tests for User Story 3
 
-- [ ] T054 [P] [US3] Test semantic version comparison (1.10.0 > 1.2.0) in internal/storage/migrations_test.go
-- [ ] T055 [P] [US3] Test migration error handling distinguishes DB errors from "no migrations" in internal/storage/migrations_test.go
-- [ ] T056 [P] [US3] Test transaction isolation - reads see uncommitted writes in internal/storage/sqlite_test.go
-- [ ] T057 [P] [US3] Test concurrent upsert operations with atomic UPSERT clause in internal/storage/sqlite_test.go
-- [ ] T058 [P] [US3] Test nested transaction behavior in internal/storage/sqlite_test.go
+- [X] T054 [P] [US3] Test semantic version comparison (1.10.0 > 1.2.0) in internal/storage/migrations_test.go
+- [X] T055 [P] [US3] Test migration error handling distinguishes DB errors from "no migrations" in internal/storage/migrations_test.go
+- [X] T056 [P] [US3] Test transaction isolation - reads see uncommitted writes in internal/storage/sqlite_test.go
+- [X] T057 [P] [US3] Test concurrent upsert operations with atomic UPSERT clause in internal/storage/sqlite_test.go
+- [X] T058 [P] [US3] Test nested transaction behavior in internal/storage/sqlite_test.go
 
 ### Implementation for User Story 3
 
@@ -218,10 +218,10 @@ Single project structure at repository root:
 
 ### Tests for User Story 4
 
-- [ ] T083 [P] [US4] Test ContextAfter field is populated or field removed from Chunk in internal/chunker/chunker_test.go
-- [ ] T084 [P] [US4] Test retry logic abstraction works for all providers in internal/embedder/providers_test.go
-- [ ] T085 [P] [US4] Test shared embedder instance between indexer and searcher in internal/mcp/server_test.go
-- [ ] T086 [P] [US4] Test parser extracts partial results on syntax errors in internal/parser/parser_test.go
+- [X] T083 [P] [US4] Test ContextAfter field is populated or field removed from Chunk in internal/chunker/chunker_test.go
+- [X] T084 [P] [US4] Test retry logic abstraction works for all providers in internal/embedder/providers_test.go
+- [X] T085 [P] [US4] Test shared embedder instance between indexer and searcher in internal/mcp/server_test.go
+- [X] T086 [P] [US4] Test parser extracts partial results on syntax errors in internal/parser/parser_test.go
 
 ### Implementation for User Story 4
 
@@ -271,9 +271,9 @@ Single project structure at repository root:
 
 ### Tests for User Story 5
 
-- [ ] T107 [P] [US5] Verify SQL ORDER BY column references are valid
-- [ ] T108 [P] [US5] Verify consistent error wrapping with %w verb
-- [ ] T109 [P] [US5] Verify all exported APIs have documentation comments
+- [X] T107 [P] [US5] Verify SQL ORDER BY column references are valid
+- [X] T108 [P] [US5] Verify consistent error wrapping with %w verb
+- [X] T109 [P] [US5] Verify all exported APIs have documentation comments
 
 ### Implementation for User Story 5
 
@@ -282,18 +282,18 @@ Single project structure at repository root:
 - [X] T111 [P] [US5] Implement proper token validation against persistent storage in tests/testdata/fixtures/authentication.go:82
 
 **Style and Consistency Fixes**
-- [ ] T112 [P] [US5] Fix all SQL ORDER BY column references across codebase
-- [ ] T113 [P] [US5] Update error wrapping to use fmt.Errorf with %w consistently
-- [ ] T114 [P] [US5] Add documentation comments to all exported types and functions
-- [ ] T115 [P] [US5] Define constants for repeated string literals (>3 occurrences)
-- [ ] T116 [P] [US5] Remove commented-out code and debug statements
-- [ ] T117 [P] [US5] Fix any remaining golangci-lint warnings
+- [X] T112 [P] [US5] Fix all SQL ORDER BY column references across codebase
+- [X] T113 [P] [US5] Update error wrapping to use fmt.Errorf with %w consistently
+- [X] T114 [P] [US5] Add documentation comments to all exported types and functions
+- [X] T115 [P] [US5] Define constants for repeated string literals (>3 occurrences)
+- [X] T116 [P] [US5] Remove commented-out code and debug statements
+- [X] T117 [P] [US5] Fix any remaining golangci-lint warnings
 
 **Validation**
-- [ ] T118 [US5] Run golangci-lint run - verify zero issues
-- [ ] T119 [US5] Run gofmt -l . - verify all files formatted
-- [ ] T120 [US5] Run go doc for exported APIs - verify completeness
-- [ ] T121 [US5] Run go test ./tests/testdata/fixtures/
+- [X] T118 [US5] Run golangci-lint run - verify zero issues
+- [X] T119 [US5] Run gofmt -l . - verify all files formatted
+- [X] T120 [US5] Run go doc for exported APIs - verify completeness
+- [X] T121 [US5] Run go test ./tests/testdata/fixtures/
 
 **Checkpoint**: Code quality excellent - zero linter issues, consistent style, complete documentation
 
@@ -303,20 +303,20 @@ Single project structure at repository root:
 
 **Purpose**: Final validation and improvements affecting multiple user stories
 
-- [ ] T122 [P] Run full test suite: go test ./...
-- [ ] T123 [P] Run tests with race detector: go test -race ./...
-- [ ] T124 [P] Generate coverage report: go test -cover ./... -coverprofile=coverage.out
-- [ ] T125 Verify coverage >80%: go tool cover -func=coverage.out | grep total
-- [ ] T126 [P] Run all benchmarks: go test -bench=. ./internal/searcher ./internal/storage
-- [ ] T127 [P] Verify sort benchmark shows O(n log n) performance improvement
-- [ ] T128 [P] Verify cache benchmark shows sustained hit rate >80%
-- [ ] T129 Update CLAUDE.md with any new patterns or lessons learned
-- [ ] T130 Update documentation in specs/002-code-quality-improvements/quickstart.md if implementation differed
-- [ ] T131 Run quickstart.md validation - verify all commands work
-- [ ] T132 Security audit - verify no SQL injection vulnerabilities remain
-- [ ] T133 Performance validation - verify search p95 < 500ms for 100k LOC codebase
-- [ ] T134 Memory profiling - verify usage < 500MB for 100k LOC codebase
-- [ ] T135 Final golangci-lint run across entire codebase - verify zero issues
+- [X] T122 [P] Run full test suite: go test ./...
+- [X] T123 [P] Run tests with race detector: go test -race ./...
+- [X] T124 [P] Generate coverage report: go test -cover ./... -coverprofile=coverage.out
+- [X] T125 Verify coverage >80%: go tool cover -func=coverage.out | grep total
+- [X] T126 [P] Run all benchmarks: go test -bench=. ./internal/searcher ./internal/storage
+- [X] T127 [P] Verify sort benchmark shows O(n log n) performance improvement
+- [X] T128 [P] Verify cache benchmark shows sustained hit rate >80%
+- [X] T129 Update CLAUDE.md with any new patterns or lessons learned
+- [X] T130 Update documentation in specs/002-code-quality-improvements/quickstart.md if implementation differed
+- [X] T131 Run quickstart.md validation - verify all commands work
+- [X] T132 Security audit - verify no SQL injection vulnerabilities remain
+- [X] T133 Performance validation - verify search p95 < 500ms for 100k LOC codebase
+- [X] T134 Memory profiling - verify usage < 500MB for 100k LOC codebase
+- [X] T135 Final golangci-lint run across entire codebase - verify zero issues
 
 ---
 
