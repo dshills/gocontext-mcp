@@ -352,7 +352,7 @@ func TestMigrationErrorHandling(t *testing.T) {
 				return db
 			},
 			expectError:   false,
-			expectVersion: "1.0.0", // Should apply all migrations starting from 0.0.0
+			expectVersion: "1.0.1", // Should apply all migrations starting from 0.0.0
 		},
 		{
 			name: "Empty schema_version table - starts from 0.0.0",
@@ -372,7 +372,7 @@ func TestMigrationErrorHandling(t *testing.T) {
 				return db
 			},
 			expectError:   false,
-			expectVersion: "1.0.0", // Should apply all migrations starting from 0.0.0
+			expectVersion: "1.0.1", // Should apply all migrations starting from 0.0.0
 		},
 		{
 			name: "Invalid version in database",
