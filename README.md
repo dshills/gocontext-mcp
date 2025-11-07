@@ -139,6 +139,141 @@ GoContext supports multiple embedding providers:
    ```
    Uses bundled local model, no API key required.
 
+## Workflow: Indexing and Querying Your Codebase
+
+Once GoContext is configured with your MCP client, follow these steps to add and query a Go codebase:
+
+### Step 1: Check if a Codebase is Already Indexed
+
+Before indexing, check if the codebase is already indexed:
+
+**Via Claude Code or MCP Client:**
+Ask: "Check the indexing status of /path/to/my/go/project"
+
+This uses the `get_status` tool internally to check:
+- Whether the project is indexed
+- Number of files and chunks indexed
+- Last indexing timestamp
+- Database health
+
+### Step 2: Index a New Codebase
+
+To index a Go codebase for the first time:
+
+**Via Claude Code or MCP Client:**
+Ask: "Index the codebase at /path/to/my/go/project"
+
+**What happens:**
+- GoContext parses all Go files using AST
+- Extracts functions, types, interfaces, and their documentation
+- Creates semantic chunks at function/type boundaries
+- Generates vector embeddings for each chunk
+- Stores everything in a local SQLite database
+
+**Options you can specify:**
+- Include test files: "Index /path/to/project including test files"
+- Force re-indexing: "Force re-index /path/to/project" (ignores cache, re-processes all files)
+- Exclude vendor: "Index /path/to/project excluding vendor directory" (default behavior)
+
+**Typical indexing time:** 2-3 minutes for a 50k LOC codebase
+
+### Step 3: Query the Indexed Codebase
+
+Once indexed, you can search using natural language or keywords:
+
+**Natural Language Queries:**
+- "Find authentication middleware functions in /path/to/project"
+- "Show me database repository implementations in /path/to/project"
+- "Where is error handling logic in /path/to/project?"
+- "Find all HTTP handlers in the API package of /path/to/project"
+
+**Keyword Queries:**
+- "Search for 'transaction' in /path/to/project"
+- "Find methods named 'Validate' in /path/to/project"
+
+**Filtered Queries:**
+- "Find functions in the auth package of /path/to/project"
+- "Show me service implementations (DDD pattern) in /path/to/project"
+- "Find all exported functions in /path/to/project"
+
+### Step 4: Re-index After Code Changes
+
+GoContext automatically detects changed files and only re-indexes modified files:
+
+**Via Claude Code or MCP Client:**
+Ask: "Re-index /path/to/my/go/project"
+
+**What happens:**
+- GoContext checks file hashes (SHA-256)
+- Only processes files that have changed since last indexing
+- Much faster than full indexing (typically < 30 seconds for 10 file changes)
+
+**Force full re-index (if needed):**
+Ask: "Force re-index /path/to/my/go/project"
+
+### Example Workflow Session
+
+```
+You: Check status of /home/user/myproject
+Claude: The project is not indexed yet. Would you like me to index it?
+
+You: Yes, index it including test files
+Claude: Indexing /home/user/myproject...
+[After ~2 minutes]
+Claude: Successfully indexed 245 files, created 1834 chunks.
+
+You: Find authentication middleware
+Claude: Found 3 results:
+1. AuthMiddleware (internal/auth/middleware.go:15)
+   - func AuthMiddleware(next http.Handler) http.Handler
+2. JWTAuthMiddleware (internal/auth/jwt.go:42)
+   - func JWTAuthMiddleware() gin.HandlerFunc
+...
+
+You: Show me the implementation of AuthMiddleware
+Claude: [Shows full code with context]
+```
+
+### Search Modes
+
+GoContext supports three search modes:
+
+1. **Hybrid** (default): Combines vector similarity with keyword matching for best results
+2. **Vector**: Pure semantic search, finds conceptually similar code even if keywords don't match
+3. **Keyword**: Traditional text search using BM25 algorithm
+
+**Via Claude Code:**
+The search mode is automatically selected based on your query. For more control:
+- "Use semantic search to find authentication in /path/to/project" (vector mode)
+- "Use keyword search for 'http.Handler' in /path/to/project" (keyword mode)
+
+### Performance Tips
+
+- **First indexing**: Takes 2-5 minutes for a 50-100k LOC codebase
+- **Re-indexing**: < 30 seconds for typical code changes (10 files)
+- **Search**: < 500ms for most queries
+- **Caching**: Frequent queries are cached for instant results
+
+### Troubleshooting
+
+**"No results found"**
+- Ensure the codebase is indexed: Check status first
+- Try different query terms: Use synonyms or more specific terms
+- Check filters: Remove package or symbol type filters
+- Try hybrid search mode if using pure vector/keyword
+
+**"Indexing is slow"**
+- Ensure you're using the CGO build (faster vector operations)
+- Check network connectivity (for remote embedding APIs)
+- Consider using local embeddings for offline operation
+- Exclude vendor directories and test files if not needed
+
+**"Search results are not relevant"**
+- Try more specific queries with context
+- Use filters to narrow down by package or symbol type
+- Specify DDD patterns if using domain-driven design
+- Re-index if codebase has changed significantly
+
 ## Usage
 
 ### MCP Tools
