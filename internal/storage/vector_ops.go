@@ -6,6 +6,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"regexp"
+	"sort"
+	"strings"
 )
 
 // searchVector performs vector similarity search using cosine similarity
@@ -327,28 +330,38 @@ type candidate struct {
 	score   float64
 }
 
-// sortCandidates sorts candidates by score in descending order
+// sortCandidates sorts candidates by score in descending order using O(n log n) algorithm
 func sortCandidates(candidates []candidate) {
-	// Simple bubble sort for now, can optimize with sort.Slice if needed
-	for i := 0; i < len(candidates); i++ {
-		for j := i + 1; j < len(candidates); j++ {
-			if candidates[j].score > candidates[i].score {
-				candidates[i], candidates[j] = candidates[j], candidates[i]
-			}
-		}
-	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
 }
 
-// sanitizeFTSQuery sanitizes a search query for FTS5
-// Removes special characters that could cause syntax errors
+// FTS5 operator pattern for escaping Boolean operators
+var ftsOperatorPattern = regexp.MustCompile(`\b(AND|OR|NOT|NEAR)\b`)
+
+// sanitizeFTSQuery sanitizes a search query for FTS5 to prevent injection attacks.
+// Escapes special FTS5 operators and characters that could be used for SQL injection.
 func sanitizeFTSQuery(query string) string {
-	// For now, just return the query as-is
-	// In production, we'd want to escape special FTS5 operators
-	// and handle phrase queries properly
 	if query == "" {
 		return ""
 	}
-	return query
+
+	// Replace special characters that have meaning in FTS5
+	replacer := strings.NewReplacer(
+		`"`, `\"`, // Quote
+		`*`, `\*`, // Wildcard
+		`(`, `\(`, // Grouping
+		`)`, `\)`, // Grouping
+	)
+	escaped := replacer.Replace(query)
+
+	// Escape Boolean operators to prevent injection
+	escaped = ftsOperatorPattern.ReplaceAllStringFunc(escaped, func(match string) string {
+		return `\` + match
+	})
+
+	return escaped
 }
 
 // SerializeVector is an exported helper for testing

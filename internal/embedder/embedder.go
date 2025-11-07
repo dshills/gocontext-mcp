@@ -6,7 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"sync"
+
+	lru "github.com/hashicorp/golang-lru/v2"
 )
 
 // Common errors
@@ -68,57 +69,59 @@ type Embedder interface {
 	Close() error
 }
 
-// Cache provides in-memory caching of embeddings by content hash
+// Cache provides in-memory LRU caching of embeddings by content hash
 type Cache struct {
-	mu     sync.RWMutex
-	store  map[string]*Embedding
-	maxLen int
+	cache *lru.Cache[string, *Embedding]
 }
 
-// NewCache creates a new embedding cache
+// NewCache creates a new embedding cache with LRU eviction
 func NewCache(maxLen int) *Cache {
 	if maxLen <= 0 {
 		maxLen = 10000 // Default: cache 10k embeddings
 	}
+	cache, err := lru.New[string, *Embedding](maxLen)
+	if err != nil {
+		// Should never happen with positive size, but fallback to default
+		cache, _ = lru.New[string, *Embedding](10000)
+	}
 	return &Cache{
-		store:  make(map[string]*Embedding),
-		maxLen: maxLen,
+		cache: cache,
 	}
 }
 
-// Get retrieves an embedding from cache
+// Get retrieves a deep copy of an embedding from cache
+// Returns a copy to prevent caller mutations from affecting cached values
 func (c *Cache) Get(hash string) (*Embedding, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	emb, ok := c.store[hash]
-	return emb, ok
-}
-
-// Set stores an embedding in cache
-func (c *Cache) Set(hash string, emb *Embedding) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Simple eviction: clear cache if at capacity
-	if len(c.store) >= c.maxLen {
-		c.store = make(map[string]*Embedding)
+	emb, ok := c.cache.Get(hash)
+	if !ok {
+		return nil, false
 	}
 
-	c.store[hash] = emb
+	// Return deep copy to prevent cache pollution from mutations
+	// Ensure Vector slice is newly allocated using append pattern
+	return &Embedding{
+		Vector:    append([]float32{}, emb.Vector...),
+		Dimension: emb.Dimension,
+		Provider:  emb.Provider,
+		Model:     emb.Model,
+		Hash:      emb.Hash,
+	}, true
+}
+
+// Set stores an embedding in cache with automatic LRU eviction
+func (c *Cache) Set(hash string, emb *Embedding) {
+	// LRU cache handles eviction automatically when at capacity
+	c.cache.Add(hash, emb)
 }
 
 // Size returns the current cache size
 func (c *Cache) Size() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.store)
+	return c.cache.Len()
 }
 
 // Clear empties the cache
 func (c *Cache) Clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.store = make(map[string]*Embedding)
+	c.cache.Purge()
 }
 
 // ComputeHash computes SHA-256 hash of text for caching

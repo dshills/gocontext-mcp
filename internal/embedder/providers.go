@@ -109,51 +109,30 @@ func (j *JinaProvider) GenerateBatch(ctx context.Context, req BatchEmbeddingRequ
 		model = j.model
 	}
 
-	// Retry logic with exponential backoff
-	var lastErr error
-	backoff := time.Duration(InitialBackoffMs) * time.Millisecond
+	// Use retry logic with exponential backoff
+	config := DefaultRetryConfig()
+	embeddings, err := retryWithBackoff(ctx, config, func() ([]*Embedding, error) {
+		return j.callAPI(ctx, req.Texts, model)
+	})
 
-	for attempt := 0; attempt < MaxRetries; attempt++ {
-		embeddings, err := j.callAPI(ctx, req.Texts, model)
-		if err == nil {
-			// Cache successful embeddings
-			if j.cache != nil {
-				for i, emb := range embeddings {
-					hash := ComputeHash(req.Texts[i])
-					emb.Hash = hash
-					j.cache.Set(hash, emb)
-				}
-			}
+	if err != nil {
+		return nil, fmt.Errorf("%w after %d retries: %v", ErrProviderFailed, MaxRetries, err)
+	}
 
-			return &BatchEmbeddingResponse{
-				Embeddings: embeddings,
-				Provider:   ProviderJina,
-				Model:      model,
-			}, nil
-		}
-
-		lastErr = err
-
-		// Don't retry on context cancellation or invalid input
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-
-		// Exponential backoff
-		if attempt < MaxRetries-1 {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(backoff):
-				backoff = time.Duration(float64(backoff) * BackoffMultiplier)
-				if backoff > MaxBackoffMs*time.Millisecond {
-					backoff = MaxBackoffMs * time.Millisecond
-				}
-			}
+	// Cache successful embeddings
+	if j.cache != nil {
+		for i, emb := range embeddings {
+			hash := ComputeHash(req.Texts[i])
+			emb.Hash = hash
+			j.cache.Set(hash, emb)
 		}
 	}
 
-	return nil, fmt.Errorf("%w after %d retries: %v", ErrProviderFailed, MaxRetries, lastErr)
+	return &BatchEmbeddingResponse{
+		Embeddings: embeddings,
+		Provider:   ProviderJina,
+		Model:      model,
+	}, nil
 }
 
 func (j *JinaProvider) callAPI(ctx context.Context, texts []string, model string) ([]*Embedding, error) {
@@ -301,51 +280,30 @@ func (o *OpenAIProvider) GenerateBatch(ctx context.Context, req BatchEmbeddingRe
 		model = o.model
 	}
 
-	// Retry logic with exponential backoff
-	var lastErr error
-	backoff := time.Duration(InitialBackoffMs) * time.Millisecond
+	// Use retry logic with exponential backoff
+	config := DefaultRetryConfig()
+	embeddings, err := retryWithBackoff(ctx, config, func() ([]*Embedding, error) {
+		return o.callAPI(ctx, req.Texts, model)
+	})
 
-	for attempt := 0; attempt < MaxRetries; attempt++ {
-		embeddings, err := o.callAPI(ctx, req.Texts, model)
-		if err == nil {
-			// Cache successful embeddings
-			if o.cache != nil {
-				for i, emb := range embeddings {
-					hash := ComputeHash(req.Texts[i])
-					emb.Hash = hash
-					o.cache.Set(hash, emb)
-				}
-			}
+	if err != nil {
+		return nil, fmt.Errorf("%w after %d retries: %v", ErrProviderFailed, MaxRetries, err)
+	}
 
-			return &BatchEmbeddingResponse{
-				Embeddings: embeddings,
-				Provider:   ProviderOpenAI,
-				Model:      model,
-			}, nil
-		}
-
-		lastErr = err
-
-		// Don't retry on context cancellation
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-
-		// Exponential backoff
-		if attempt < MaxRetries-1 {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(backoff):
-				backoff = time.Duration(float64(backoff) * BackoffMultiplier)
-				if backoff > MaxBackoffMs*time.Millisecond {
-					backoff = MaxBackoffMs * time.Millisecond
-				}
-			}
+	// Cache successful embeddings
+	if o.cache != nil {
+		for i, emb := range embeddings {
+			hash := ComputeHash(req.Texts[i])
+			emb.Hash = hash
+			o.cache.Set(hash, emb)
 		}
 	}
 
-	return nil, fmt.Errorf("%w after %d retries: %v", ErrProviderFailed, MaxRetries, lastErr)
+	return &BatchEmbeddingResponse{
+		Embeddings: embeddings,
+		Provider:   ProviderOpenAI,
+		Model:      model,
+	}, nil
 }
 
 func (o *OpenAIProvider) callAPI(ctx context.Context, texts []string, model string) ([]*Embedding, error) {

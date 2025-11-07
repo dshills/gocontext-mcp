@@ -234,6 +234,40 @@ func TestCache(t *testing.T) {
 			t.Error("Cache is empty after concurrent operations")
 		}
 	})
+
+	t.Run("mutation isolation", func(t *testing.T) {
+		cache := NewCache(10)
+
+		// Store original embedding
+		original := &Embedding{
+			Vector:    []float32{1.0, 2.0, 3.0},
+			Dimension: 3,
+			Provider:  ProviderJina,
+			Model:     "test",
+			Hash:      "hash1",
+		}
+		cache.Set("hash1", original)
+
+		// Get first copy and mutate it
+		emb1, ok := cache.Get("hash1")
+		if !ok {
+			t.Fatal("Expected cache hit")
+		}
+		emb1.Vector[0] = 999.0
+
+		// Get second copy - should be unchanged
+		emb2, ok := cache.Get("hash1")
+		if !ok {
+			t.Fatal("Expected cache hit")
+		}
+
+		if emb2.Vector[0] == 999.0 {
+			t.Error("Cache pollution detected: mutation affected cached value")
+		}
+		if emb2.Vector[0] != 1.0 {
+			t.Errorf("Expected original value 1.0, got %f", emb2.Vector[0])
+		}
+	})
 }
 
 func TestLocalProvider(t *testing.T) {

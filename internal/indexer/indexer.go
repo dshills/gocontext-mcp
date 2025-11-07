@@ -37,7 +37,7 @@ type Indexer struct {
 	workers int
 
 	// Concurrency control for indexing operations
-	indexMutex sync.Mutex
+	indexLock IndexLock
 }
 
 // Config contains configuration for the indexer
@@ -100,10 +100,10 @@ func NewWithEmbedder(storage storage.Storage, emb embedder.Embedder) *Indexer {
 // IndexProject indexes an entire Go project
 func (idx *Indexer) IndexProject(ctx context.Context, rootPath string, config *Config) (*Statistics, error) {
 	// Attempt to acquire lock for exclusive indexing access
-	if !idx.indexMutex.TryLock() {
+	if !idx.indexLock.TryAcquire() {
 		return nil, ErrIndexingInProgress
 	}
-	defer idx.indexMutex.Unlock()
+	defer idx.indexLock.Release()
 
 	if config == nil {
 		config = &Config{
@@ -351,7 +351,22 @@ func (idx *Indexer) indexBatch(ctx context.Context, project *storage.Project, fi
 
 	// Generate embeddings for all chunks in this batch
 	if config.GenerateEmbeddings && len(allChunks) > 0 && idx.embedder != nil {
-		idx.generateEmbeddingsForChunks(ctx, allChunks, config.EmbeddingBatch, embeddings, embeddingsFail, mu, stats)
+		// Track embedding results for cleanup
+		// embeddingResults maps chunkID -> success status for each chunk that was processed
+		embeddingResults := idx.generateEmbeddingsForChunks(ctx, allChunks, config.EmbeddingBatch, embeddings, embeddingsFail, mu, stats)
+
+		// Clean up orphaned chunks (chunks without embeddings)
+		// This maintains consistency: with embeddings enabled, all stored chunks should have embeddings.
+		// Only chunks where embedding generation/storage failed are deleted (embeddingResults[id]=false or missing).
+		// Chunks with successful embeddings (embeddingResults[id]=true) are kept regardless of which file they came from.
+		// Design decision: We intentionally don't fail the batch on cleanup errors to avoid data loss,
+		// but log the error for monitoring. Orphaned chunks can be cleaned up later via maintenance jobs.
+		if err := idx.cleanupOrphanedChunks(ctx, allChunks, embeddingResults, mu, stats); err != nil {
+			// Log cleanup error but don't fail the batch
+			mu.Lock()
+			stats.ErrorMessages = append(stats.ErrorMessages, fmt.Sprintf("cleanup orphaned chunks: %v", err))
+			mu.Unlock()
+		}
 	}
 
 	return nil
@@ -531,11 +546,14 @@ func (idx *Indexer) updateProjectStats(ctx context.Context, project *storage.Pro
 	return idx.storage.UpdateProject(ctx, project)
 }
 
-// generateEmbeddingsForChunks generates embeddings for a batch of chunks
-func (idx *Indexer) generateEmbeddingsForChunks(ctx context.Context, chunks []chunkWithID, batchSize int, embeddings, embeddingsFail *int32, mu *sync.Mutex, stats *Statistics) {
+// generateEmbeddingsForChunks generates embeddings for a batch of chunks and returns results
+func (idx *Indexer) generateEmbeddingsForChunks(ctx context.Context, chunks []chunkWithID, batchSize int, embeddings, embeddingsFail *int32, mu *sync.Mutex, stats *Statistics) map[int64]bool {
 	if batchSize <= 0 {
 		batchSize = 30
 	}
+
+	// Track which chunks successfully got embeddings
+	results := make(map[int64]bool)
 
 	// Process chunks in batches
 	for i := 0; i < len(chunks); i += batchSize {
@@ -562,6 +580,13 @@ func (idx *Indexer) generateEmbeddingsForChunks(ctx context.Context, chunks []ch
 			stats.ErrorMessages = append(stats.ErrorMessages, fmt.Sprintf("embedding batch %d-%d: %v", i, end, err))
 			mu.Unlock()
 			atomic.AddInt32(embeddingsFail, int32(len(batch)))
+
+			// Mark all chunks in this batch as failed
+			for _, c := range batch {
+				if c.chunk.ID != 0 {
+					results[c.chunk.ID] = false
+				}
+			}
 			continue
 		}
 
@@ -574,6 +599,7 @@ func (idx *Indexer) generateEmbeddingsForChunks(ctx context.Context, chunks []ch
 			chunkID := batch[j].chunk.ID
 			if chunkID == 0 {
 				// Chunk wasn't stored successfully, skip
+				// Don't add to results map - we only track successfully stored chunks
 				atomic.AddInt32(embeddingsFail, 1)
 				continue
 			}
@@ -594,12 +620,71 @@ func (idx *Indexer) generateEmbeddingsForChunks(ctx context.Context, chunks []ch
 				stats.ErrorMessages = append(stats.ErrorMessages, fmt.Sprintf("store embedding chunk %d: %v", chunkID, err))
 				mu.Unlock()
 				atomic.AddInt32(embeddingsFail, 1)
+				results[chunkID] = false
 				continue
 			}
 
 			atomic.AddInt32(embeddings, 1)
+			results[chunkID] = true
 		}
 	}
+
+	return results
+}
+
+// cleanupOrphanedChunks removes chunks that failed to get embeddings
+func (idx *Indexer) cleanupOrphanedChunks(ctx context.Context, chunks []chunkWithID, embeddingResults map[int64]bool, mu *sync.Mutex, stats *Statistics) error {
+	// Collect chunk IDs that need to be deleted
+	var orphanedChunkIDs []int64
+	for _, c := range chunks {
+		chunkID := c.chunk.ID
+		if chunkID == 0 {
+			continue // Skip chunks that weren't stored
+		}
+
+		// Check if embedding generation succeeded for this chunk
+		success, exists := embeddingResults[chunkID]
+		if !exists || !success {
+			orphanedChunkIDs = append(orphanedChunkIDs, chunkID)
+		}
+	}
+
+	// No orphaned chunks to clean up
+	if len(orphanedChunkIDs) == 0 {
+		return nil
+	}
+
+	// Log cleanup operation
+	mu.Lock()
+	stats.ErrorMessages = append(stats.ErrorMessages, fmt.Sprintf("cleaning up %d orphaned chunks", len(orphanedChunkIDs)))
+	mu.Unlock()
+
+	// Delete orphaned chunks in a transaction for atomicity
+	tx, err := idx.storage.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin cleanup transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Delete orphaned chunks in batch for performance
+	deletedCount, err := tx.DeleteChunksBatch(ctx, orphanedChunkIDs)
+	if err != nil {
+		return fmt.Errorf("failed to batch delete %d orphaned chunks: %w", len(orphanedChunkIDs), err)
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit cleanup transaction: %w", err)
+	}
+
+	// Log successful cleanup
+	if deletedCount > 0 {
+		mu.Lock()
+		stats.ErrorMessages = append(stats.ErrorMessages, fmt.Sprintf("successfully deleted %d orphaned chunks", deletedCount))
+		mu.Unlock()
+	}
+
+	return nil
 }
 
 // computeFileHash computes SHA-256 hash of a file

@@ -1118,9 +1118,9 @@ func TestSearchWithCache(t *testing.T) {
 		t.Fatalf("Search failed: %v", err)
 	}
 
-	// Cache is stubbed, so CacheHit should be false
+	// First request should be cache miss
 	if resp.CacheHit {
-		t.Error("expected CacheHit false with stubbed cache")
+		t.Error("expected CacheHit false on first request")
 	}
 }
 
@@ -1182,4 +1182,34 @@ func abs(x float64) float64 {
 		return -x
 	}
 	return x
+}
+
+// TestNilEmbedderValidation tests that Search returns an error when embedder is nil (T032-T033)
+func TestNilEmbedderValidation(t *testing.T) {
+	// Create storage (but no embedder)
+	store, err := storage.NewSQLiteStorage(":memory:")
+	if err != nil {
+		t.Skip("skipping test due to migration issues")
+	}
+	defer store.Close()
+
+	// Create searcher with nil embedder - this is the bug we're testing
+	s := NewSearcher(store, nil)
+
+	req := SearchRequest{
+		Query:     "test query",
+		Limit:     10,
+		Mode:      SearchModeVector,
+		ProjectID: 1,
+	}
+
+	_, err = s.Search(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error when embedder is nil, got nil")
+	}
+
+	expectedMsg := "embedder not initialized"
+	if err.Error() != expectedMsg {
+		t.Errorf("expected error message %q, got %q", expectedMsg, err.Error())
+	}
 }

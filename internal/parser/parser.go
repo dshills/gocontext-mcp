@@ -36,30 +36,34 @@ func (p *Parser) ParseFile(filePath string) (*types.ParseResult, error) {
 	// Parse the file with comments for doc extraction
 	file, err := parser.ParseFile(p.fset, filePath, content, parser.ParseComments)
 	if err != nil {
-		// Syntax errors are non-fatal - we still return partial results
+		// Syntax errors are non-fatal - record error but continue with partial AST
 		result.AddError(filePath, 0, 0, fmt.Sprintf("syntax error: %v", err))
-		return result, nil
+		// Note: parser.ParseFile may return partial AST even on error
+		// Continue processing if we have any AST nodes
 	}
 
-	// Extract package name
-	if file.Name != nil {
-		result.PackageName = file.Name.Name
+	// Extract partial results from whatever AST we have
+	if file != nil {
+		// Extract package name
+		if file.Name != nil {
+			result.PackageName = file.Name.Name
+		}
+
+		// Extract imports
+		result.Imports = p.extractImports(file)
+
+		// Extract symbols using AST traversal
+		extractor := &symbolExtractor{
+			fset:        p.fset,
+			file:        file,
+			filePath:    filePath,
+			packageName: result.PackageName,
+			symbols:     make([]types.Symbol, 0),
+		}
+
+		ast.Inspect(file, extractor.visit)
+		result.Symbols = extractor.symbols
 	}
-
-	// Extract imports
-	result.Imports = p.extractImports(file)
-
-	// Extract symbols using AST traversal
-	extractor := &symbolExtractor{
-		fset:        p.fset,
-		file:        file,
-		filePath:    filePath,
-		packageName: result.PackageName,
-		symbols:     make([]types.Symbol, 0),
-	}
-
-	ast.Inspect(file, extractor.visit)
-	result.Symbols = extractor.symbols
 
 	return result, nil
 }

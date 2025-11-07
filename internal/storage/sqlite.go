@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -138,7 +139,8 @@ func (s *SQLiteStorage) CreateProject(ctx context.Context, project *Project) err
 	return s.createProjectWithQuerier(ctx, s.querier(), project)
 }
 
-func (s *SQLiteStorage) GetProject(ctx context.Context, rootPath string) (*Project, error) {
+// getProjectWithQuerier is the internal implementation that uses a querier
+func (s *SQLiteStorage) getProjectWithQuerier(ctx context.Context, q querier, rootPath string) (*Project, error) {
 	query := `
 		SELECT id, root_path, module_name, go_version, total_files, total_chunks,
 		       index_version, last_indexed_at, created_at, updated_at
@@ -147,7 +149,7 @@ func (s *SQLiteStorage) GetProject(ctx context.Context, rootPath string) (*Proje
 	`
 	var project Project
 	var lastIndexedAt sql.NullTime
-	err := s.db.QueryRowContext(ctx, query, rootPath).Scan(
+	err := q.QueryRowContext(ctx, query, rootPath).Scan(
 		&project.ID, &project.RootPath, &project.ModuleName, &project.GoVersion,
 		&project.TotalFiles, &project.TotalChunks, &project.IndexVersion,
 		&lastIndexedAt, &project.CreatedAt, &project.UpdatedAt,
@@ -162,6 +164,10 @@ func (s *SQLiteStorage) GetProject(ctx context.Context, rootPath string) (*Proje
 		project.LastIndexedAt = lastIndexedAt.Time
 	}
 	return &project, nil
+}
+
+func (s *SQLiteStorage) GetProject(ctx context.Context, rootPath string) (*Project, error) {
+	return s.getProjectWithQuerier(ctx, s.querier(), rootPath)
 }
 
 // updateProjectWithQuerier is the internal implementation that uses a querier
@@ -254,7 +260,8 @@ func (s *SQLiteStorage) GetFile(ctx context.Context, projectID int64, filePath s
 	return s.getFileWithQuerier(ctx, s.querier(), projectID, filePath)
 }
 
-func (s *SQLiteStorage) GetFileByID(ctx context.Context, fileID int64) (*File, error) {
+// getFileByIDWithQuerier is the internal implementation that uses a querier
+func (s *SQLiteStorage) getFileByIDWithQuerier(ctx context.Context, q querier, fileID int64) (*File, error) {
 	query := `
 		SELECT id, project_id, file_path, package_name, content_hash, mod_time,
 		       size_bytes, parse_error, last_indexed_at, created_at, updated_at
@@ -264,7 +271,7 @@ func (s *SQLiteStorage) GetFileByID(ctx context.Context, fileID int64) (*File, e
 	var file File
 	var hash []byte
 	var parseError sql.NullString
-	err := s.db.QueryRowContext(ctx, query, fileID).Scan(
+	err := q.QueryRowContext(ctx, query, fileID).Scan(
 		&file.ID, &file.ProjectID, &file.FilePath, &file.PackageName,
 		&hash, &file.ModTime, &file.SizeBytes, &parseError,
 		&file.LastIndexedAt, &file.CreatedAt, &file.UpdatedAt,
@@ -280,6 +287,10 @@ func (s *SQLiteStorage) GetFileByID(ctx context.Context, fileID int64) (*File, e
 		file.ParseError = &parseError.String
 	}
 	return &file, nil
+}
+
+func (s *SQLiteStorage) GetFileByID(ctx context.Context, fileID int64) (*File, error) {
+	return s.getFileByIDWithQuerier(ctx, s.querier(), fileID)
 }
 
 func (s *SQLiteStorage) GetFileByHash(ctx context.Context, contentHash [32]byte) (*File, error) {
@@ -298,7 +309,8 @@ func (s *SQLiteStorage) DeleteFile(ctx context.Context, fileID int64) error {
 	return s.deleteFileWithQuerier(ctx, s.querier(), fileID)
 }
 
-func (s *SQLiteStorage) ListFiles(ctx context.Context, projectID int64) ([]*File, error) {
+// listFilesWithQuerier is the internal implementation that uses a querier
+func (s *SQLiteStorage) listFilesWithQuerier(ctx context.Context, q querier, projectID int64) ([]*File, error) {
 	query := `
 		SELECT id, project_id, file_path, package_name, content_hash, mod_time,
 		       size_bytes, parse_error, last_indexed_at, created_at, updated_at
@@ -306,7 +318,7 @@ func (s *SQLiteStorage) ListFiles(ctx context.Context, projectID int64) ([]*File
 		WHERE project_id = ?
 		ORDER BY file_path
 	`
-	rows, err := s.db.QueryContext(ctx, query, projectID)
+	rows, err := q.QueryContext(ctx, query, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -337,78 +349,55 @@ func (s *SQLiteStorage) ListFiles(ctx context.Context, projectID int64) ([]*File
 	return files, rows.Err()
 }
 
+func (s *SQLiteStorage) ListFiles(ctx context.Context, projectID int64) ([]*File, error) {
+	return s.listFilesWithQuerier(ctx, s.querier(), projectID)
+}
+
 // Symbol operations
 
 // upsertSymbolWithQuerier is the internal implementation that uses a querier
 func (s *SQLiteStorage) upsertSymbolWithQuerier(ctx context.Context, q querier, symbol *Symbol) error {
-	// Check if symbol already exists (natural key: file_id + name + start_line + start_col)
-	checkQuery := `
-		SELECT id, created_at FROM symbols
-		WHERE file_id = ? AND name = ? AND start_line = ? AND start_col = ?
-		LIMIT 1
-	`
-	var existingID int64
-	var createdAt time.Time
-	err := q.QueryRowContext(ctx, checkQuery,
-		symbol.FileID, symbol.Name, symbol.StartLine, symbol.StartCol,
-	).Scan(&existingID, &createdAt)
-
-	if err == nil {
-		// Symbol exists - UPDATE it
-		updateQuery := `
-			UPDATE symbols SET
-				kind = ?, package_name = ?, signature = ?, doc_comment = ?,
-				scope = ?, receiver = ?, end_line = ?, end_col = ?,
-				is_aggregate_root = ?, is_entity = ?, is_value_object = ?, is_repository = ?,
-				is_service = ?, is_command = ?, is_query = ?, is_handler = ?
-			WHERE id = ?
-		`
-		_, err = q.ExecContext(ctx, updateQuery,
-			symbol.Kind, symbol.PackageName, symbol.Signature, symbol.DocComment,
-			symbol.Scope, symbol.Receiver, symbol.EndLine, symbol.EndCol,
-			symbol.IsAggregateRoot, symbol.IsEntity, symbol.IsValueObject, symbol.IsRepository,
-			symbol.IsService, symbol.IsCommand, symbol.IsQuery, symbol.IsHandler,
-			existingID,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to update symbol: %w", err)
-		}
-		symbol.ID = existingID
-		symbol.CreatedAt = createdAt
-		return nil
-	}
-
-	if err != sql.ErrNoRows {
-		return fmt.Errorf("failed to check existing symbol: %w", err)
-	}
-
-	// Symbol doesn't exist - INSERT it
-	insertQuery := `
+	// Use atomic INSERT ... ON CONFLICT to avoid race conditions
+	query := `
 		INSERT INTO symbols (
 			file_id, name, kind, package_name, signature, doc_comment, scope, receiver,
 			start_line, start_col, end_line, end_col,
 			is_aggregate_root, is_entity, is_value_object, is_repository,
 			is_service, is_command, is_query, is_handler, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(file_id, name, start_line, start_col)
+		DO UPDATE SET
+			kind = excluded.kind,
+			package_name = excluded.package_name,
+			signature = excluded.signature,
+			doc_comment = excluded.doc_comment,
+			scope = excluded.scope,
+			receiver = excluded.receiver,
+			end_line = excluded.end_line,
+			end_col = excluded.end_col,
+			is_aggregate_root = excluded.is_aggregate_root,
+			is_entity = excluded.is_entity,
+			is_value_object = excluded.is_value_object,
+			is_repository = excluded.is_repository,
+			is_service = excluded.is_service,
+			is_command = excluded.is_command,
+			is_query = excluded.is_query,
+			is_handler = excluded.is_handler
+		RETURNING id, created_at
 	`
 	now := time.Now()
-	result, err := q.ExecContext(ctx, insertQuery,
+	err := q.QueryRowContext(ctx, query,
 		symbol.FileID, symbol.Name, symbol.Kind, symbol.PackageName,
 		symbol.Signature, symbol.DocComment, symbol.Scope, symbol.Receiver,
 		symbol.StartLine, symbol.StartCol, symbol.EndLine, symbol.EndCol,
 		symbol.IsAggregateRoot, symbol.IsEntity, symbol.IsValueObject, symbol.IsRepository,
 		symbol.IsService, symbol.IsCommand, symbol.IsQuery, symbol.IsHandler, now,
-	)
+	).Scan(&symbol.ID, &symbol.CreatedAt)
+
 	if err != nil {
-		return fmt.Errorf("failed to insert symbol: %w", err)
+		return fmt.Errorf("failed to upsert symbol: %w", err)
 	}
 
-	id, err := result.LastInsertId()
-	if err != nil {
-		return err
-	}
-	symbol.ID = id
-	symbol.CreatedAt = now
 	return nil
 }
 
@@ -487,7 +476,11 @@ func (s *SQLiteStorage) deleteSymbolsByFileWithQuerier(ctx context.Context, q qu
 	return err
 }
 
-func (s *SQLiteStorage) SearchSymbols(ctx context.Context, query string, limit int) ([]*Symbol, error) {
+// searchSymbolsWithQuerier is the internal implementation that uses a querier
+func (s *SQLiteStorage) searchSymbolsWithQuerier(ctx context.Context, q querier, query string, limit int) ([]*Symbol, error) {
+	// Note: In FTS5, 'rank' is a built-in virtual column representing BM25 relevance score.
+	// It should be accessed without table qualification when used in ORDER BY.
+	// Lower rank values indicate better matches (negative values in FTS5).
 	sqlQuery := `
 		SELECT s.id, s.file_id, s.name, s.kind, s.package_name, s.signature, s.doc_comment, s.scope, s.receiver,
 		       s.start_line, s.start_col, s.end_line, s.end_col,
@@ -499,7 +492,7 @@ func (s *SQLiteStorage) SearchSymbols(ctx context.Context, query string, limit i
 		ORDER BY rank
 		LIMIT ?
 	`
-	rows, err := s.db.QueryContext(ctx, sqlQuery, query, limit)
+	rows, err := q.QueryContext(ctx, sqlQuery, query, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -523,80 +516,50 @@ func (s *SQLiteStorage) SearchSymbols(ctx context.Context, query string, limit i
 	return symbols, rows.Err()
 }
 
+func (s *SQLiteStorage) SearchSymbols(ctx context.Context, query string, limit int) ([]*Symbol, error) {
+	return s.searchSymbolsWithQuerier(ctx, s.querier(), query, limit)
+}
+
 // Chunk operations
 
 // upsertChunkWithQuerier is the internal implementation that uses a querier
 func (s *SQLiteStorage) upsertChunkWithQuerier(ctx context.Context, q querier, chunk *Chunk) error {
-	// Check if chunk already exists (natural key: file_id + start_line + end_line)
-	checkQuery := `
-		SELECT id, created_at FROM chunks
-		WHERE file_id = ? AND start_line = ? AND end_line = ?
-		LIMIT 1
-	`
-	var existingID int64
-	var createdAt time.Time
-	err := q.QueryRowContext(ctx, checkQuery,
-		chunk.FileID, chunk.StartLine, chunk.EndLine,
-	).Scan(&existingID, &createdAt)
-
+	// Use atomic INSERT ... ON CONFLICT to avoid race conditions
 	var symbolID interface{}
 	if chunk.SymbolID != nil {
 		symbolID = *chunk.SymbolID
 	}
 
-	if err == nil {
-		// Chunk exists - UPDATE it
-		updateQuery := `
-			UPDATE chunks SET
-				symbol_id = ?, content = ?, content_hash = ?, token_count = ?,
-				context_before = ?, context_after = ?, chunk_type = ?, updated_at = ?
-			WHERE id = ?
-		`
-		now := time.Now()
-		_, err = q.ExecContext(ctx, updateQuery,
-			symbolID, chunk.Content, chunk.ContentHash[:], chunk.TokenCount,
-			chunk.ContextBefore, chunk.ContextAfter, chunk.ChunkType, now,
-			existingID,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to update chunk: %w", err)
-		}
-		chunk.ID = existingID
-		chunk.CreatedAt = createdAt
-		chunk.UpdatedAt = now
-		return nil
-	}
-
-	if err != sql.ErrNoRows {
-		return fmt.Errorf("failed to check existing chunk: %w", err)
-	}
-
-	// Chunk doesn't exist - INSERT it
-	insertQuery := `
+	query := `
 		INSERT INTO chunks (
 			file_id, symbol_id, content, content_hash, token_count,
 			start_line, end_line, context_before, context_after, chunk_type,
 			created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(file_id, start_line, end_line)
+		DO UPDATE SET
+			symbol_id = excluded.symbol_id,
+			content = excluded.content,
+			content_hash = excluded.content_hash,
+			token_count = excluded.token_count,
+			context_before = excluded.context_before,
+			context_after = excluded.context_after,
+			chunk_type = excluded.chunk_type,
+			updated_at = excluded.updated_at
+		RETURNING id, created_at, updated_at
 	`
 	now := time.Now()
-	result, err := q.ExecContext(ctx, insertQuery,
+	err := q.QueryRowContext(ctx, query,
 		chunk.FileID, symbolID, chunk.Content, chunk.ContentHash[:],
 		chunk.TokenCount, chunk.StartLine, chunk.EndLine,
 		chunk.ContextBefore, chunk.ContextAfter, chunk.ChunkType,
 		now, now,
-	)
+	).Scan(&chunk.ID, &chunk.CreatedAt, &chunk.UpdatedAt)
+
 	if err != nil {
-		return fmt.Errorf("failed to insert chunk: %w", err)
+		return fmt.Errorf("failed to upsert chunk: %w", err)
 	}
 
-	id, err := result.LastInsertId()
-	if err != nil {
-		return err
-	}
-	chunk.ID = id
-	chunk.CreatedAt = now
-	chunk.UpdatedAt = now
 	return nil
 }
 
@@ -676,6 +639,51 @@ func (s *SQLiteStorage) ListChunksByFile(ctx context.Context, fileID int64) ([]*
 		chunks = append(chunks, &chunk)
 	}
 	return chunks, rows.Err()
+}
+
+// DeleteChunk deletes a single chunk by ID
+func (s *SQLiteStorage) DeleteChunk(ctx context.Context, chunkID int64) error {
+	return s.deleteChunkWithQuerier(ctx, s.querier(), chunkID)
+}
+
+// deleteChunkWithQuerier is the internal implementation that uses a querier
+func (s *SQLiteStorage) deleteChunkWithQuerier(ctx context.Context, q querier, chunkID int64) error {
+	query := `DELETE FROM chunks WHERE id = ?`
+	_, err := q.ExecContext(ctx, query, chunkID)
+	return err
+}
+
+// DeleteChunksBatch deletes multiple chunks in a single query
+func (s *SQLiteStorage) DeleteChunksBatch(ctx context.Context, chunkIDs []int64) (int, error) {
+	return s.deleteChunksBatchWithQuerier(ctx, s.querier(), chunkIDs)
+}
+
+// deleteChunksBatchWithQuerier is the internal implementation that uses a querier
+func (s *SQLiteStorage) deleteChunksBatchWithQuerier(ctx context.Context, q querier, chunkIDs []int64) (int, error) {
+	if len(chunkIDs) == 0 {
+		return 0, nil
+	}
+
+	// Build parameterized IN clause
+	placeholders := make([]string, len(chunkIDs))
+	args := make([]interface{}, len(chunkIDs))
+	for i, id := range chunkIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := `DELETE FROM chunks WHERE id IN (` + strings.Join(placeholders, ",") + `)`
+	result, err := q.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	return int(rowsAffected), nil
 }
 
 // deleteChunksByFileWithQuerier is the internal implementation that uses a querier
@@ -947,7 +955,7 @@ func (t *sqliteTx) CreateProject(ctx context.Context, project *Project) error {
 }
 
 func (t *sqliteTx) GetProject(ctx context.Context, rootPath string) (*Project, error) {
-	return t.storage.GetProject(ctx, rootPath)
+	return t.storage.getProjectWithQuerier(ctx, t.querier(), rootPath)
 }
 
 func (t *sqliteTx) UpdateProject(ctx context.Context, project *Project) error {
@@ -963,7 +971,7 @@ func (t *sqliteTx) GetFile(ctx context.Context, projectID int64, filePath string
 }
 
 func (t *sqliteTx) GetFileByID(ctx context.Context, fileID int64) (*File, error) {
-	return t.storage.GetFileByID(ctx, fileID)
+	return t.storage.getFileByIDWithQuerier(ctx, t.querier(), fileID)
 }
 
 func (t *sqliteTx) GetFileByHash(ctx context.Context, contentHash [32]byte) (*File, error) {
@@ -975,7 +983,7 @@ func (t *sqliteTx) DeleteFile(ctx context.Context, fileID int64) error {
 }
 
 func (t *sqliteTx) ListFiles(ctx context.Context, projectID int64) ([]*File, error) {
-	return t.storage.ListFiles(ctx, projectID)
+	return t.storage.listFilesWithQuerier(ctx, t.querier(), projectID)
 }
 
 func (t *sqliteTx) UpsertSymbol(ctx context.Context, symbol *Symbol) error {
@@ -995,7 +1003,7 @@ func (t *sqliteTx) DeleteSymbolsByFile(ctx context.Context, fileID int64) error 
 }
 
 func (t *sqliteTx) SearchSymbols(ctx context.Context, query string, limit int) ([]*Symbol, error) {
-	return t.storage.SearchSymbols(ctx, query, limit)
+	return t.storage.searchSymbolsWithQuerier(ctx, t.querier(), query, limit)
 }
 
 func (t *sqliteTx) UpsertChunk(ctx context.Context, chunk *Chunk) error {
@@ -1008,6 +1016,14 @@ func (t *sqliteTx) GetChunk(ctx context.Context, chunkID int64) (*Chunk, error) 
 
 func (t *sqliteTx) ListChunksByFile(ctx context.Context, fileID int64) ([]*Chunk, error) {
 	return t.storage.ListChunksByFile(ctx, fileID)
+}
+
+func (t *sqliteTx) DeleteChunk(ctx context.Context, chunkID int64) error {
+	return t.storage.deleteChunkWithQuerier(ctx, t.querier(), chunkID)
+}
+
+func (t *sqliteTx) DeleteChunksBatch(ctx context.Context, chunkIDs []int64) (int, error) {
+	return t.storage.deleteChunksBatchWithQuerier(ctx, t.querier(), chunkIDs)
 }
 
 func (t *sqliteTx) DeleteChunksByFile(ctx context.Context, fileID int64) error {
@@ -1056,5 +1072,8 @@ func (t *sqliteTx) Close() error {
 }
 
 func (t *sqliteTx) BeginTx(ctx context.Context) (Tx, error) {
-	return nil, errors.New("cannot start nested transaction")
+	// SQLite does not support true nested transactions
+	// We return an error to prevent accidental misuse
+	// If savepoints are needed in the future, implement here
+	return nil, errors.New("nested transactions not supported")
 }

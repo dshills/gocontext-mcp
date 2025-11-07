@@ -82,6 +82,9 @@ examples/*/output/
 *.bak
 *.orig
 
+# Code review results
+review-results/
+
 # OS files
 Thumbs.db
 .fuse_hidden*
@@ -103,3 +106,4 @@ settings.local.json
 secrets/
 credentials/
 tests/e2e/
+gocontext

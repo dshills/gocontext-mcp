@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/Masterminds/semver/v3"
 )
 
 const (
@@ -105,6 +107,7 @@ CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
 CREATE INDEX IF NOT EXISTS idx_symbols_package ON symbols(package_name);
 CREATE INDEX IF NOT EXISTS idx_symbols_ddd ON symbols(is_aggregate_root, is_entity, is_value_object);
 CREATE INDEX IF NOT EXISTS idx_symbols_cqrs ON symbols(is_command, is_query, is_handler);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_unique ON symbols(file_id, name, start_line, start_col);
 
 -- Full-text search on symbols
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
@@ -154,6 +157,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_symbol ON chunks(symbol_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(content_hash);
 CREATE INDEX IF NOT EXISTS idx_chunks_type ON chunks(chunk_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_unique ON chunks(file_id, start_line, end_line);
 
 -- Full-text search on chunks
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
@@ -248,22 +252,47 @@ DROP TABLE IF EXISTS schema_version;
 
 // ApplyMigrations runs all pending migrations
 func ApplyMigrations(ctx context.Context, db *sql.DB) error {
-	// Check current schema version
-	var currentVersion string
-	err := db.QueryRowContext(ctx, "SELECT version FROM schema_version ORDER BY applied_at DESC LIMIT 1").Scan(&currentVersion)
-	if err != nil && err != sql.ErrNoRows {
-		// schema_version table doesn't exist, need to run initial migration
-		currentVersion = ""
+	// Check if schema_version table exists
+	var tableName string
+	err := db.QueryRowContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'").Scan(&tableName)
+
+	// Parse current version (default to 0.0.0 if no migrations applied or table doesn't exist)
+	var currentVersion *semver.Version
+	if err == sql.ErrNoRows {
+		// schema_version table doesn't exist, start from 0.0.0
+		currentVersion = semver.MustParse("0.0.0")
+	} else if err != nil {
+		return fmt.Errorf("failed to check schema_version table: %w", err)
+	} else {
+		// Table exists, check current version
+		var currentVersionStr string
+		err = db.QueryRowContext(ctx, "SELECT version FROM schema_version ORDER BY applied_at DESC LIMIT 1").Scan(&currentVersionStr)
+		if err == sql.ErrNoRows || currentVersionStr == "" {
+			currentVersion = semver.MustParse("0.0.0")
+		} else if err != nil {
+			return fmt.Errorf("failed to read schema_version: %w", err)
+		} else {
+			currentVersion, err = semver.NewVersion(currentVersionStr)
+			if err != nil {
+				return fmt.Errorf("invalid current schema version %s: %w", currentVersionStr, err)
+			}
+		}
 	}
 
-	// Run migrations
+	// Run migrations in order
 	for _, migration := range AllMigrations {
-		if migration.Version <= currentVersion {
+		migrationVersion, err := semver.NewVersion(migration.Version)
+		if err != nil {
+			return fmt.Errorf("invalid migration version %s: %w", migration.Version, err)
+		}
+
+		// Skip if already applied (LessThanOrEqual means current >= migration)
+		if !currentVersion.LessThan(migrationVersion) {
 			continue // Already applied
 		}
 
 		// Execute migration
-		_, err := db.ExecContext(ctx, migration.Up)
+		_, err = db.ExecContext(ctx, migration.Up)
 		if err != nil {
 			return fmt.Errorf("failed to apply migration %s: %w", migration.Version, err)
 		}
@@ -273,6 +302,9 @@ func ApplyMigrations(ctx context.Context, db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("failed to record migration %s: %w", migration.Version, err)
 		}
+
+		// Update current version for next iteration
+		currentVersion = migrationVersion
 	}
 
 	return nil

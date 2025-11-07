@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/dshills/gocontext-mcp/internal/embedder"
 	"github.com/dshills/gocontext-mcp/internal/storage"
@@ -45,24 +48,45 @@ type SearchResponse struct {
 	TextResults   int
 }
 
+// cacheEntry represents a cached search response with expiration time
+type cacheEntry struct {
+	response  *SearchResponse
+	expiresAt time.Time
+}
+
 // Searcher coordinates search operations across vector and text search
 type Searcher struct {
 	storage  storage.Storage
 	embedder embedder.Embedder
-	// mu was removed as it was unused - add back if concurrent cache access is needed
+	cache    *lru.Cache[[32]byte, *cacheEntry]
+	cacheMu  sync.RWMutex
 }
 
 // NewSearcher creates a new Searcher instance
 func NewSearcher(storage storage.Storage, embedder embedder.Embedder) *Searcher {
+	// Create LRU cache with 1000 entry limit
+	// Cache will automatically evict least recently used entries
+	cache, err := lru.New[[32]byte, *cacheEntry](1000)
+	if err != nil {
+		// This should never happen with valid size parameter
+		panic(fmt.Sprintf("failed to create LRU cache: %v", err))
+	}
+
 	return &Searcher{
 		storage:  storage,
 		embedder: embedder,
+		cache:    cache,
 	}
 }
 
 // Search performs a search based on the request parameters
 func (s *Searcher) Search(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
 	startTime := time.Now()
+
+	// Validate searcher state
+	if s.embedder == nil {
+		return nil, fmt.Errorf("embedder not initialized")
+	}
 
 	// Validate request
 	if err := s.validateRequest(&req); err != nil {
@@ -384,21 +408,103 @@ func (s *Searcher) validateRequest(req *SearchRequest) error {
 
 // checkCache looks up cached search results
 func (s *Searcher) checkCache(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
-	_ = computeQueryHash(req)
+	hash := computeQueryHash(req)
+	now := time.Now()
 
-	// For now, return not found - cache will be implemented after basic storage methods
-	// TODO: Implement proper cache lookup
-	return nil, fmt.Errorf("cache not found")
+	s.cacheMu.RLock()
+	entry, found := s.cache.Get(hash)
+
+	if !found {
+		s.cacheMu.RUnlock()
+		return nil, fmt.Errorf("cache miss")
+	}
+
+	// Check if entry has expired while holding read lock to avoid race condition
+	if now.After(entry.expiresAt) {
+		s.cacheMu.RUnlock()
+
+		// Remove expired entry - need write lock
+		s.cacheMu.Lock()
+		s.cache.Remove(hash)
+		s.cacheMu.Unlock()
+		return nil, fmt.Errorf("cache expired")
+	}
+
+	// Entry is valid - return a deep copy while still holding read lock
+	// to ensure entry isn't modified during copy
+	response := copySearchResponse(entry.response)
+	s.cacheMu.RUnlock()
+
+	return response, nil
 }
 
 // storeInCache saves search results to cache
 func (s *Searcher) storeInCache(ctx context.Context, req SearchRequest, response *SearchResponse) error {
-	_ = computeQueryHash(req)
-	_ = ctx
-	_ = response
+	hash := computeQueryHash(req)
 
-	// TODO: Implement cache storage
+	// Calculate expiration time using TTL from request
+	expiresAt := time.Now().Add(req.CacheTTL)
+
+	// Create cache entry with deep copy to prevent external modifications
+	entry := &cacheEntry{
+		response:  copySearchResponse(response),
+		expiresAt: expiresAt,
+	}
+
+	s.cacheMu.Lock()
+	s.cache.Add(hash, entry)
+	s.cacheMu.Unlock()
+
 	return nil
+}
+
+// copySearchResponse creates a deep copy of a SearchResponse
+func copySearchResponse(src *SearchResponse) *SearchResponse {
+	if src == nil {
+		return nil
+	}
+
+	// Create new response with copied metadata
+	dst := &SearchResponse{
+		TotalResults:  src.TotalResults,
+		SearchMode:    src.SearchMode,
+		Duration:      src.Duration,
+		CacheHit:      src.CacheHit,
+		VectorResults: src.VectorResults,
+		TextResults:   src.TextResults,
+		Results:       make([]types.SearchResult, len(src.Results)),
+	}
+
+	// Deep copy each search result
+	for i, result := range src.Results {
+		dst.Results[i] = types.SearchResult{
+			ChunkID:        result.ChunkID,
+			Rank:           result.Rank,
+			RelevanceScore: result.RelevanceScore,
+			Content:        result.Content,
+			Context:        result.Context,
+		}
+
+		// Copy Symbol pointer if it exists
+		// Note: Symbol contains only primitive types and nested Position structs,
+		// so shallow copy is sufficient. If Symbol is modified to include slice/map
+		// fields in the future, this must be updated to deep copy those fields.
+		if result.Symbol != nil {
+			symbolCopy := *result.Symbol
+			dst.Results[i].Symbol = &symbolCopy
+		}
+
+		// Copy FileInfo pointer if it exists
+		// Note: FileInfo contains only primitive types, so shallow copy is sufficient.
+		// If FileInfo is modified to include slice/map fields in the future, this must
+		// be updated to deep copy those fields.
+		if result.File != nil {
+			fileCopy := *result.File
+			dst.Results[i].File = &fileCopy
+		}
+	}
+
+	return dst
 }
 
 // computeQueryHash computes a unique hash for a search request
@@ -437,16 +543,41 @@ func sortRankedResults(results []rankedResult) {
 
 // InvalidateCache removes cached queries for a specific project
 func (s *Searcher) InvalidateCache(ctx context.Context, projectID int64) error {
-	_ = ctx
-	_ = projectID
-	// TODO: Implement cache invalidation
+	// Since we need to check each entry's project ID, we need to iterate through all keys
+	// LRU cache doesn't support filtering, so we purge the entire cache
+	// This is acceptable as cache invalidation typically happens on reindexing
+	s.cacheMu.Lock()
+	s.cache.Purge()
+	s.cacheMu.Unlock()
 	return nil
 }
 
 // EvictLRU removes least-used cache entries when cache size exceeds limit
 func (s *Searcher) EvictLRU(ctx context.Context, maxEntries int) error {
-	_ = ctx
-	_ = maxEntries
-	// TODO: Implement LRU eviction
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+
+	// LRU cache handles eviction automatically when entries are added
+	// This method is primarily for downsizing the cache capacity
+
+	currentLen := s.cache.Len()
+	if currentLen <= maxEntries {
+		// No action needed - cache is within limits
+		return nil
+	}
+
+	// NOTE: hashicorp/golang-lru doesn't support resizing existing cache
+	// When downsizing is required, we intentionally clear the cache
+	// This is acceptable because:
+	// 1. Cache downsizing is rare (typically only on configuration changes)
+	// 2. The cache will rebuild with most-recently-used entries
+	// 3. This prevents memory issues when drastically reducing cache size
+	newCache, err := lru.New[[32]byte, *cacheEntry](maxEntries)
+	if err != nil {
+		return fmt.Errorf("failed to create new cache: %w", err)
+	}
+
+	s.cache = newCache
+
 	return nil
 }
