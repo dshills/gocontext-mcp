@@ -33,6 +33,8 @@ type Storage interface {
 	UpsertChunk(ctx context.Context, chunk *Chunk) error
 	GetChunk(ctx context.Context, chunkID int64) (*Chunk, error)
 	ListChunksByFile(ctx context.Context, fileID int64) ([]*Chunk, error)
+	DeleteChunk(ctx context.Context, chunkID int64) error
+	DeleteChunksBatch(ctx context.Context, chunkIDs []int64) (deletedCount int, err error)
 	DeleteChunksByFile(ctx context.Context, fileID int64) error
 
 	// Embedding operations

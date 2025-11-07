@@ -27,6 +27,18 @@ const (
 	ErrorCodeEmptyQuery         = -32004 // Query parameter is empty
 )
 
+// Precompiled regex patterns for FTS query sanitization
+// These patterns are safe for concurrent use - regexp.Regexp is immutable after compilation
+// and all methods are thread-safe as documented in the regexp package.
+var (
+	// ftsSpecialCharsRE matches characters with special meaning in SQLite FTS5
+	// Keep alphanumeric, spaces, and basic punctuation (-, _, .)
+	ftsSpecialCharsRE = regexp.MustCompile(`[^\w\s\-_.]`)
+
+	// ftsMultipleSpacesRE collapses multiple spaces into single space
+	ftsMultipleSpacesRE = regexp.MustCompile(`\s+`)
+)
+
 // handleIndexCodebase handles the index_codebase tool invocation
 func (s *Server) handleIndexCodebase(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// Extract and validate parameters
@@ -517,11 +529,10 @@ func isValidDDDPattern(pattern string) bool {
 func sanitizeQueryForFTS(query string) string {
 	// Remove characters that have special meaning in SQLite FTS5
 	// Keep alphanumeric, spaces, and basic punctuation
-	re := regexp.MustCompile(`[^\w\s\-_.]`)
-	sanitized := re.ReplaceAllString(query, " ")
+	sanitized := ftsSpecialCharsRE.ReplaceAllString(query, " ")
 
 	// Collapse multiple spaces
-	sanitized = regexp.MustCompile(`\s+`).ReplaceAllString(sanitized, " ")
+	sanitized = ftsMultipleSpacesRE.ReplaceAllString(sanitized, " ")
 
 	return strings.TrimSpace(sanitized)
 }

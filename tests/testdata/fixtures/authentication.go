@@ -2,9 +2,10 @@ package sample
 
 import (
 	"context"
-	"crypto/sha256"
+	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -117,10 +118,18 @@ func verifyPassword(hashedPassword, password string) bool {
 	return err == nil
 }
 
-// generateToken creates a deterministic token from email
+// generateToken creates a cryptographically secure random token
 func generateToken(email string) string {
-	hash := sha256.Sum256([]byte(email + time.Now().String()))
-	return hex.EncodeToString(hash[:])
+	// Use crypto/rand for secure random token generation
+	tokenBytes := make([]byte, 32) // 256 bits
+	_, err := rand.Read(tokenBytes)
+	if err != nil {
+		// SECURITY: In production, this should panic or return an error to the caller
+		// to prevent authentication bypass. Empty tokens should never be accepted.
+		// For test fixtures, we panic to catch errors during testing.
+		panic(fmt.Sprintf("CRITICAL: crypto/rand failure - system entropy exhausted: %v", err))
+	}
+	return hex.EncodeToString(tokenBytes)
 }
 
 // RefreshToken extends the expiration of an existing token

@@ -1118,9 +1118,9 @@ func TestSearchWithCache(t *testing.T) {
 		t.Fatalf("Search failed: %v", err)
 	}
 
-	// Cache is stubbed, so CacheHit should be false
+	// First request should be cache miss
 	if resp.CacheHit {
-		t.Error("expected CacheHit false with stubbed cache")
+		t.Error("expected CacheHit false on first request")
 	}
 }
 

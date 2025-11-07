@@ -98,11 +98,9 @@ func (c *Cache) Get(hash string) (*Embedding, bool) {
 	}
 
 	// Return deep copy to prevent cache pollution from mutations
-	vectorCopy := make([]float32, len(emb.Vector))
-	copy(vectorCopy, emb.Vector)
-
+	// Ensure Vector slice is newly allocated using append pattern
 	return &Embedding{
-		Vector:    vectorCopy,
+		Vector:    append([]float32{}, emb.Vector...),
 		Dimension: emb.Dimension,
 		Provider:  emb.Provider,
 		Model:     emb.Model,

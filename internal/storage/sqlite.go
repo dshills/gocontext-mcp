@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -259,7 +260,8 @@ func (s *SQLiteStorage) GetFile(ctx context.Context, projectID int64, filePath s
 	return s.getFileWithQuerier(ctx, s.querier(), projectID, filePath)
 }
 
-func (s *SQLiteStorage) GetFileByID(ctx context.Context, fileID int64) (*File, error) {
+// getFileByIDWithQuerier is the internal implementation that uses a querier
+func (s *SQLiteStorage) getFileByIDWithQuerier(ctx context.Context, q querier, fileID int64) (*File, error) {
 	query := `
 		SELECT id, project_id, file_path, package_name, content_hash, mod_time,
 		       size_bytes, parse_error, last_indexed_at, created_at, updated_at
@@ -269,7 +271,7 @@ func (s *SQLiteStorage) GetFileByID(ctx context.Context, fileID int64) (*File, e
 	var file File
 	var hash []byte
 	var parseError sql.NullString
-	err := s.db.QueryRowContext(ctx, query, fileID).Scan(
+	err := q.QueryRowContext(ctx, query, fileID).Scan(
 		&file.ID, &file.ProjectID, &file.FilePath, &file.PackageName,
 		&hash, &file.ModTime, &file.SizeBytes, &parseError,
 		&file.LastIndexedAt, &file.CreatedAt, &file.UpdatedAt,
@@ -285,6 +287,10 @@ func (s *SQLiteStorage) GetFileByID(ctx context.Context, fileID int64) (*File, e
 		file.ParseError = &parseError.String
 	}
 	return &file, nil
+}
+
+func (s *SQLiteStorage) GetFileByID(ctx context.Context, fileID int64) (*File, error) {
+	return s.getFileByIDWithQuerier(ctx, s.querier(), fileID)
 }
 
 func (s *SQLiteStorage) GetFileByHash(ctx context.Context, contentHash [32]byte) (*File, error) {
@@ -303,7 +309,8 @@ func (s *SQLiteStorage) DeleteFile(ctx context.Context, fileID int64) error {
 	return s.deleteFileWithQuerier(ctx, s.querier(), fileID)
 }
 
-func (s *SQLiteStorage) ListFiles(ctx context.Context, projectID int64) ([]*File, error) {
+// listFilesWithQuerier is the internal implementation that uses a querier
+func (s *SQLiteStorage) listFilesWithQuerier(ctx context.Context, q querier, projectID int64) ([]*File, error) {
 	query := `
 		SELECT id, project_id, file_path, package_name, content_hash, mod_time,
 		       size_bytes, parse_error, last_indexed_at, created_at, updated_at
@@ -311,7 +318,7 @@ func (s *SQLiteStorage) ListFiles(ctx context.Context, projectID int64) ([]*File
 		WHERE project_id = ?
 		ORDER BY file_path
 	`
-	rows, err := s.db.QueryContext(ctx, query, projectID)
+	rows, err := q.QueryContext(ctx, query, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -340,6 +347,10 @@ func (s *SQLiteStorage) ListFiles(ctx context.Context, projectID int64) ([]*File
 		files = append(files, &file)
 	}
 	return files, rows.Err()
+}
+
+func (s *SQLiteStorage) ListFiles(ctx context.Context, projectID int64) ([]*File, error) {
+	return s.listFilesWithQuerier(ctx, s.querier(), projectID)
 }
 
 // Symbol operations
@@ -465,7 +476,11 @@ func (s *SQLiteStorage) deleteSymbolsByFileWithQuerier(ctx context.Context, q qu
 	return err
 }
 
-func (s *SQLiteStorage) SearchSymbols(ctx context.Context, query string, limit int) ([]*Symbol, error) {
+// searchSymbolsWithQuerier is the internal implementation that uses a querier
+func (s *SQLiteStorage) searchSymbolsWithQuerier(ctx context.Context, q querier, query string, limit int) ([]*Symbol, error) {
+	// Note: In FTS5, 'rank' is a built-in virtual column representing BM25 relevance score.
+	// It should be accessed without table qualification when used in ORDER BY.
+	// Lower rank values indicate better matches (negative values in FTS5).
 	sqlQuery := `
 		SELECT s.id, s.file_id, s.name, s.kind, s.package_name, s.signature, s.doc_comment, s.scope, s.receiver,
 		       s.start_line, s.start_col, s.end_line, s.end_col,
@@ -477,7 +492,7 @@ func (s *SQLiteStorage) SearchSymbols(ctx context.Context, query string, limit i
 		ORDER BY rank
 		LIMIT ?
 	`
-	rows, err := s.db.QueryContext(ctx, sqlQuery, query, limit)
+	rows, err := q.QueryContext(ctx, sqlQuery, query, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -499,6 +514,10 @@ func (s *SQLiteStorage) SearchSymbols(ctx context.Context, query string, limit i
 		symbols = append(symbols, &symbol)
 	}
 	return symbols, rows.Err()
+}
+
+func (s *SQLiteStorage) SearchSymbols(ctx context.Context, query string, limit int) ([]*Symbol, error) {
+	return s.searchSymbolsWithQuerier(ctx, s.querier(), query, limit)
 }
 
 // Chunk operations
@@ -620,6 +639,51 @@ func (s *SQLiteStorage) ListChunksByFile(ctx context.Context, fileID int64) ([]*
 		chunks = append(chunks, &chunk)
 	}
 	return chunks, rows.Err()
+}
+
+// DeleteChunk deletes a single chunk by ID
+func (s *SQLiteStorage) DeleteChunk(ctx context.Context, chunkID int64) error {
+	return s.deleteChunkWithQuerier(ctx, s.querier(), chunkID)
+}
+
+// deleteChunkWithQuerier is the internal implementation that uses a querier
+func (s *SQLiteStorage) deleteChunkWithQuerier(ctx context.Context, q querier, chunkID int64) error {
+	query := `DELETE FROM chunks WHERE id = ?`
+	_, err := q.ExecContext(ctx, query, chunkID)
+	return err
+}
+
+// DeleteChunksBatch deletes multiple chunks in a single query
+func (s *SQLiteStorage) DeleteChunksBatch(ctx context.Context, chunkIDs []int64) (int, error) {
+	return s.deleteChunksBatchWithQuerier(ctx, s.querier(), chunkIDs)
+}
+
+// deleteChunksBatchWithQuerier is the internal implementation that uses a querier
+func (s *SQLiteStorage) deleteChunksBatchWithQuerier(ctx context.Context, q querier, chunkIDs []int64) (int, error) {
+	if len(chunkIDs) == 0 {
+		return 0, nil
+	}
+
+	// Build parameterized IN clause
+	placeholders := make([]string, len(chunkIDs))
+	args := make([]interface{}, len(chunkIDs))
+	for i, id := range chunkIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := `DELETE FROM chunks WHERE id IN (` + strings.Join(placeholders, ",") + `)`
+	result, err := q.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	return int(rowsAffected), nil
 }
 
 // deleteChunksByFileWithQuerier is the internal implementation that uses a querier
@@ -907,7 +971,7 @@ func (t *sqliteTx) GetFile(ctx context.Context, projectID int64, filePath string
 }
 
 func (t *sqliteTx) GetFileByID(ctx context.Context, fileID int64) (*File, error) {
-	return t.storage.GetFileByID(ctx, fileID)
+	return t.storage.getFileByIDWithQuerier(ctx, t.querier(), fileID)
 }
 
 func (t *sqliteTx) GetFileByHash(ctx context.Context, contentHash [32]byte) (*File, error) {
@@ -919,7 +983,7 @@ func (t *sqliteTx) DeleteFile(ctx context.Context, fileID int64) error {
 }
 
 func (t *sqliteTx) ListFiles(ctx context.Context, projectID int64) ([]*File, error) {
-	return t.storage.ListFiles(ctx, projectID)
+	return t.storage.listFilesWithQuerier(ctx, t.querier(), projectID)
 }
 
 func (t *sqliteTx) UpsertSymbol(ctx context.Context, symbol *Symbol) error {
@@ -939,7 +1003,7 @@ func (t *sqliteTx) DeleteSymbolsByFile(ctx context.Context, fileID int64) error 
 }
 
 func (t *sqliteTx) SearchSymbols(ctx context.Context, query string, limit int) ([]*Symbol, error) {
-	return t.storage.SearchSymbols(ctx, query, limit)
+	return t.storage.searchSymbolsWithQuerier(ctx, t.querier(), query, limit)
 }
 
 func (t *sqliteTx) UpsertChunk(ctx context.Context, chunk *Chunk) error {
@@ -952,6 +1016,14 @@ func (t *sqliteTx) GetChunk(ctx context.Context, chunkID int64) (*Chunk, error) 
 
 func (t *sqliteTx) ListChunksByFile(ctx context.Context, fileID int64) ([]*Chunk, error) {
 	return t.storage.ListChunksByFile(ctx, fileID)
+}
+
+func (t *sqliteTx) DeleteChunk(ctx context.Context, chunkID int64) error {
+	return t.storage.deleteChunkWithQuerier(ctx, t.querier(), chunkID)
+}
+
+func (t *sqliteTx) DeleteChunksBatch(ctx context.Context, chunkIDs []int64) (int, error) {
+	return t.storage.deleteChunksBatchWithQuerier(ctx, t.querier(), chunkIDs)
 }
 
 func (t *sqliteTx) DeleteChunksByFile(ctx context.Context, fileID int64) error {
@@ -1000,5 +1072,8 @@ func (t *sqliteTx) Close() error {
 }
 
 func (t *sqliteTx) BeginTx(ctx context.Context) (Tx, error) {
-	return nil, errors.New("cannot start nested transaction")
+	// SQLite does not support true nested transactions
+	// We return an error to prevent accidental misuse
+	// If savepoints are needed in the future, implement here
+	return nil, errors.New("nested transactions not supported")
 }
