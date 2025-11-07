@@ -13,6 +13,77 @@ import (
 
 // searchVector performs vector similarity search using cosine similarity
 func searchVector(ctx context.Context, db *sql.DB, projectID int64, queryVector []float32, limit int, filters *SearchFilters) ([]VectorResult, error) {
+	// Use optimized SQL-based search when sqlite-vec is available
+	if VectorExtensionAvailable {
+		return searchVectorOptimized(ctx, db, projectID, queryVector, limit, filters)
+	}
+	// Fall back to Go-based computation for purego builds
+	return searchVectorFallback(ctx, db, projectID, queryVector, limit, filters)
+}
+
+// searchVectorOptimized uses sqlite-vec extension for SQL-based vector similarity search
+func searchVectorOptimized(ctx context.Context, db *sql.DB, projectID int64, queryVector []float32, limit int, filters *SearchFilters) ([]VectorResult, error) {
+	// Serialize query vector for sqlite-vec
+	queryVectorBlob := serializeVector(queryVector)
+
+	// Build SQL query that computes distance at database layer
+	// Note: sqlite-vec's vec_distance_cosine returns distance (lower is better)
+	// We convert to similarity (1 - distance) to maintain API compatibility
+	query := `
+		SELECT
+			c.id as chunk_id,
+			1.0 - vec_distance_cosine(e.vector, ?) as similarity
+		FROM chunks c
+		INNER JOIN embeddings e ON c.id = e.chunk_id
+		INNER JOIN files f ON c.file_id = f.id
+		WHERE f.project_id = ?
+	`
+	args := []interface{}{queryVectorBlob, projectID}
+
+	// Apply filters in SQL WHERE clause
+	query, args = applyVectorFilters(query, args, filters)
+
+	// Apply minimum relevance filter in SQL if specified
+	if filters != nil && filters.MinRelevance > 0 {
+		query += " AND (1.0 - vec_distance_cosine(e.vector, ?)) >= ?"
+		args = append(args, queryVectorBlob, filters.MinRelevance)
+	}
+
+	// Order by similarity (descending) and apply LIMIT in SQL
+	query += " ORDER BY similarity DESC LIMIT ?"
+	args = append(args, limit)
+
+	// Execute query - results are already sorted and filtered
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute vector search: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	// Collect results - no sorting needed as SQL handles it
+	// Handle edge case: negative or zero limit
+	if limit <= 0 {
+		return []VectorResult{}, nil
+	}
+	results := make([]VectorResult, 0, limit)
+	for rows.Next() {
+		var result VectorResult
+		if err := rows.Scan(&result.ChunkID, &result.SimilarityScore); err != nil {
+			return nil, fmt.Errorf("failed to scan result: %w", err)
+		}
+		results = append(results, result)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return results, nil
+}
+
+// searchVectorFallback performs vector search using Go-based cosine similarity computation
+// This is used when sqlite-vec extension is not available (purego builds)
+func searchVectorFallback(ctx context.Context, db *sql.DB, projectID int64, queryVector []float32, limit int, filters *SearchFilters) ([]VectorResult, error) {
 	// Build query with filters
 	query := `
 		SELECT
@@ -35,7 +106,7 @@ func searchVector(ctx context.Context, db *sql.DB, projectID int64, queryVector 
 	}
 	defer func() { _ = rows.Close() }()
 
-	// Compute similarity scores and rank
+	// Compute similarity scores and rank in Go
 	candidates, err := computeSimilarityScores(rows, queryVector, filters)
 	if err != nil {
 		return nil, err
@@ -245,6 +316,10 @@ func computeSimilarityScores(rows *sql.Rows, queryVector []float32, filters *Sea
 
 // buildVectorResults creates VectorResult slice from candidates
 func buildVectorResults(candidates []candidate, limit int) []VectorResult {
+	// Handle negative or zero limit - return all candidates
+	if limit <= 0 {
+		limit = len(candidates)
+	}
 	if limit > len(candidates) {
 		limit = len(candidates)
 	}

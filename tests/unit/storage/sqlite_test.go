@@ -1502,3 +1502,439 @@ func TestConcurrentReads(t *testing.T) {
 		}
 	}
 }
+
+// TestTransactionIsolation tests that reads within a transaction see uncommitted writes.
+// Regression test for T056 [US3]: Verifies transaction isolation - reads see uncommitted writes within tx,
+// but not outside tx until commit.
+// Bug fixed: Proper querier interface usage ensures transaction isolation works correctly.
+func TestTransactionIsolation(t *testing.T) {
+	store := setupTestStorage(t)
+	ctx := context.Background()
+
+	t.Run("Read within transaction sees uncommitted write", func(t *testing.T) {
+		tx, err := store.BeginTx(ctx)
+		if err != nil {
+			t.Fatalf("BeginTx failed: %v", err)
+		}
+		defer tx.Rollback()
+
+		// Create project within transaction
+		project := &storage.Project{
+			RootPath:     "/test/tx-isolation-1",
+			ModuleName:   "github.com/test/isolation",
+			GoVersion:    "1.23",
+			IndexVersion: "1.0.0",
+		}
+		err = tx.CreateProject(ctx, project)
+		if err != nil {
+			t.Fatalf("CreateProject in tx failed: %v", err)
+		}
+
+		// Read within same transaction - should see the uncommitted write
+		retrieved, err := tx.GetProject(ctx, "/test/tx-isolation-1")
+		if err != nil {
+			t.Fatalf("GetProject within tx failed: %v", err)
+		}
+
+		if retrieved.RootPath != project.RootPath {
+			t.Errorf("Expected to see uncommitted write within tx: got RootPath %s, want %s",
+				retrieved.RootPath, project.RootPath)
+		}
+	})
+
+	t.Run("Read after rollback does not see write", func(t *testing.T) {
+		tx, err := store.BeginTx(ctx)
+		if err != nil {
+			t.Fatalf("BeginTx failed: %v", err)
+		}
+
+		// Create project within transaction
+		project := &storage.Project{
+			RootPath:     "/test/tx-isolation-2",
+			ModuleName:   "github.com/test/isolation2",
+			GoVersion:    "1.23",
+			IndexVersion: "1.0.0",
+		}
+		err = tx.CreateProject(ctx, project)
+		if err != nil {
+			t.Fatalf("CreateProject in tx failed: %v", err)
+		}
+
+		// Rollback the transaction
+		err = tx.Rollback()
+		if err != nil {
+			t.Fatalf("Rollback failed: %v", err)
+		}
+
+		// Read from outside transaction - should NOT see rolled-back write
+		_, err = store.GetProject(ctx, "/test/tx-isolation-2")
+		if err != storage.ErrNotFound {
+			t.Errorf("Expected ErrNotFound when reading rolled-back data, got: %v", err)
+		}
+	})
+
+	t.Run("Read after commit sees write", func(t *testing.T) {
+		tx, err := store.BeginTx(ctx)
+		if err != nil {
+			t.Fatalf("BeginTx failed: %v", err)
+		}
+
+		// Create project within transaction
+		project := &storage.Project{
+			RootPath:     "/test/tx-isolation-3",
+			ModuleName:   "github.com/test/isolation3",
+			GoVersion:    "1.23",
+			IndexVersion: "1.0.0",
+		}
+		err = tx.CreateProject(ctx, project)
+		if err != nil {
+			t.Fatalf("CreateProject in tx failed: %v", err)
+		}
+
+		// Commit the transaction
+		err = tx.Commit()
+		if err != nil {
+			t.Fatalf("Commit failed: %v", err)
+		}
+
+		// Read from outside transaction - should NOW see the committed write
+		retrieved, err := store.GetProject(ctx, "/test/tx-isolation-3")
+		if err != nil {
+			t.Fatalf("GetProject after commit failed: %v", err)
+		}
+
+		if retrieved.RootPath != project.RootPath {
+			t.Errorf("Expected to see committed write: got RootPath %s, want %s",
+				retrieved.RootPath, project.RootPath)
+		}
+	})
+
+	t.Run("Verify querier interface works correctly", func(t *testing.T) {
+		tx, err := store.BeginTx(ctx)
+		if err != nil {
+			t.Fatalf("BeginTx failed: %v", err)
+		}
+		defer tx.Rollback()
+
+		// Setup project and file for querier test
+		project := &storage.Project{
+			RootPath:     "/test/querier",
+			ModuleName:   "github.com/test/querier",
+			GoVersion:    "1.23",
+			IndexVersion: "1.0.0",
+		}
+		err = tx.CreateProject(ctx, project)
+		if err != nil {
+			t.Fatalf("CreateProject failed: %v", err)
+		}
+
+		hash := sha256.Sum256([]byte("querier test"))
+		file := &storage.File{
+			ProjectID:   project.ID,
+			FilePath:    "querier.go",
+			PackageName: "test",
+			ContentHash: hash,
+			ModTime:     time.Now(),
+			SizeBytes:   42,
+		}
+		err = tx.UpsertFile(ctx, file)
+		if err != nil {
+			t.Fatalf("UpsertFile in tx failed: %v", err)
+		}
+
+		// Read file within transaction using querier
+		retrieved, err := tx.GetFile(ctx, project.ID, "querier.go")
+		if err != nil {
+			t.Fatalf("GetFile within tx failed: %v", err)
+		}
+
+		if retrieved.SizeBytes != 42 {
+			t.Errorf("Expected SizeBytes 42, got %d", retrieved.SizeBytes)
+		}
+	})
+}
+
+// TestConcurrentUpsertOperations tests that concurrent upserts don't cause race conditions.
+// Regression test for T057 [US3]: Verifies atomic UPSERT clause prevents race conditions during concurrent writes.
+// Bug fixed: Using INSERT ... ON CONFLICT DO UPDATE ensures atomic upsert operations.
+func TestConcurrentUpsertOperations(t *testing.T) {
+	store := setupTestStorage(t)
+	ctx := context.Background()
+
+	// Setup: Create project
+	project := &storage.Project{
+		RootPath:     "/test/concurrent-upsert",
+		ModuleName:   "github.com/test/upsert",
+		GoVersion:    "1.23",
+		IndexVersion: "1.0.0",
+	}
+	if err := store.CreateProject(ctx, project); err != nil {
+		t.Fatalf("CreateProject failed: %v", err)
+	}
+
+	// Setup: Create file
+	hash := sha256.Sum256([]byte("concurrent upsert test"))
+	file := &storage.File{
+		ProjectID:   project.ID,
+		FilePath:    "upsert.go",
+		PackageName: "test",
+		ContentHash: hash,
+		ModTime:     time.Now(),
+		SizeBytes:   100,
+	}
+	if err := store.UpsertFile(ctx, file); err != nil {
+		t.Fatalf("UpsertFile failed: %v", err)
+	}
+
+	t.Run("Concurrent symbol upserts with same key", func(t *testing.T) {
+		const numGoroutines = 20
+		done := make(chan error, numGoroutines)
+
+		// All goroutines try to upsert the same symbol (same natural key)
+		for i := 0; i < numGoroutines; i++ {
+			iteration := i
+			go func() {
+				symbol := &storage.Symbol{
+					FileID:      file.ID,
+					Name:        "ConcurrentFunc",
+					Kind:        "function",
+					PackageName: "test",
+					Signature:   "func ConcurrentFunc() v" + string(rune('0'+iteration%10)),
+					StartLine:   100,
+					StartCol:    0,
+					EndLine:     110,
+					EndCol:      1,
+				}
+				err := store.UpsertSymbol(ctx, symbol)
+				done <- err
+			}()
+		}
+
+		// Wait for all upserts
+		for i := 0; i < numGoroutines; i++ {
+			err := <-done
+			if err != nil {
+				t.Errorf("concurrent upsert %d failed: %v", i, err)
+			}
+		}
+
+		// Verify only one symbol exists (UNIQUE constraint prevented duplicates)
+		symbols, err := store.ListSymbolsByFile(ctx, file.ID)
+		if err != nil {
+			t.Fatalf("ListSymbolsByFile failed: %v", err)
+		}
+
+		// Should have exactly 1 symbol due to UNIQUE constraint on (file_id, name, start_line, start_col)
+		if len(symbols) != 1 {
+			t.Errorf("Expected 1 symbol after concurrent upserts, got %d", len(symbols))
+		}
+
+		if len(symbols) > 0 && symbols[0].Name != "ConcurrentFunc" {
+			t.Errorf("Expected Name ConcurrentFunc, got %s", symbols[0].Name)
+		}
+	})
+
+	t.Run("Concurrent chunk upserts with atomic INSERT ON CONFLICT", func(t *testing.T) {
+		const numGoroutines = 15
+		done := make(chan error, numGoroutines)
+
+		// All goroutines try to upsert the same chunk (same natural key: file_id, start_line, end_line)
+		for i := 0; i < numGoroutines; i++ {
+			iteration := i
+			go func() {
+				content := "concurrent chunk content v" + string(rune('0'+iteration%10))
+				contentHash := sha256.Sum256([]byte(content))
+				chunk := &storage.Chunk{
+					FileID:      file.ID,
+					Content:     content,
+					ContentHash: contentHash,
+					TokenCount:  10 + iteration,
+					StartLine:   50,
+					EndLine:     60,
+					ChunkType:   "function",
+				}
+				err := store.UpsertChunk(ctx, chunk)
+				done <- err
+			}()
+		}
+
+		// Wait for all upserts
+		for i := 0; i < numGoroutines; i++ {
+			err := <-done
+			if err != nil {
+				t.Errorf("concurrent chunk upsert %d failed: %v", i, err)
+			}
+		}
+
+		// Verify only one chunk exists (UNIQUE constraint on file_id, start_line, end_line)
+		chunks, err := store.ListChunksByFile(ctx, file.ID)
+		if err != nil {
+			t.Fatalf("ListChunksByFile failed: %v", err)
+		}
+
+		// Count chunks at lines 50-60
+		var targetChunks int
+		for _, chunk := range chunks {
+			if chunk.StartLine == 50 && chunk.EndLine == 60 {
+				targetChunks++
+			}
+		}
+
+		if targetChunks != 1 {
+			t.Errorf("Expected 1 chunk at lines 50-60 after concurrent upserts, got %d", targetChunks)
+		}
+	})
+
+	t.Run("UNIQUE constraints prevent duplicates", func(t *testing.T) {
+		// Create a symbol
+		symbol := &storage.Symbol{
+			FileID:      file.ID,
+			Name:        "UniqueTest",
+			Kind:        "function",
+			PackageName: "test",
+			StartLine:   200,
+			StartCol:    0,
+			EndLine:     210,
+			EndCol:      1,
+		}
+		err := store.UpsertSymbol(ctx, symbol)
+		if err != nil {
+			t.Fatalf("Initial UpsertSymbol failed: %v", err)
+		}
+
+		// Upsert again with same key - should update, not create duplicate
+		symbol.Signature = "updated signature"
+		err = store.UpsertSymbol(ctx, symbol)
+		if err != nil {
+			t.Fatalf("Second UpsertSymbol failed: %v", err)
+		}
+
+		// Verify only one symbol exists
+		symbols, err := store.ListSymbolsByFile(ctx, file.ID)
+		if err != nil {
+			t.Fatalf("ListSymbolsByFile failed: %v", err)
+		}
+
+		// Count symbols named "UniqueTest"
+		var uniqueTestCount int
+		for _, s := range symbols {
+			if s.Name == "UniqueTest" {
+				uniqueTestCount++
+			}
+		}
+
+		if uniqueTestCount != 1 {
+			t.Errorf("Expected 1 UniqueTest symbol, got %d (UNIQUE constraint failed)", uniqueTestCount)
+		}
+	})
+}
+
+// TestNestedTransactionBehavior tests nested transaction handling.
+// Regression test for T058 [US3]: Verifies nested transaction behavior is properly handled/documented.
+// Bug fixed: BeginTx within transaction returns clear error (SQLite doesn't support true nested transactions).
+func TestNestedTransactionBehavior(t *testing.T) {
+	store := setupTestStorage(t)
+	ctx := context.Background()
+
+	t.Run("BeginTx within transaction returns error", func(t *testing.T) {
+		// Start outer transaction
+		outerTx, err := store.BeginTx(ctx)
+		if err != nil {
+			t.Fatalf("BeginTx (outer) failed: %v", err)
+		}
+		defer outerTx.Rollback()
+
+		// Try to start nested transaction - should fail
+		nestedTx, err := outerTx.BeginTx(ctx)
+		if err == nil {
+			defer nestedTx.Rollback()
+			t.Error("Expected error when calling BeginTx within transaction, got nil")
+		}
+
+		// Error should indicate nested transactions not supported
+		if err != nil && !contains(err.Error(), "nested transactions not supported") {
+			t.Errorf("Expected 'nested transactions not supported' error, got: %v", err)
+		}
+	})
+
+	t.Run("Rollback outer transaction discards all changes", func(t *testing.T) {
+		tx, err := store.BeginTx(ctx)
+		if err != nil {
+			t.Fatalf("BeginTx failed: %v", err)
+		}
+
+		// Create project
+		project := &storage.Project{
+			RootPath:     "/test/nested-rollback",
+			ModuleName:   "github.com/test/nested",
+			GoVersion:    "1.23",
+			IndexVersion: "1.0.0",
+		}
+		err = tx.CreateProject(ctx, project)
+		if err != nil {
+			t.Fatalf("CreateProject in tx failed: %v", err)
+		}
+
+		// Create file
+		hash := sha256.Sum256([]byte("nested test"))
+		file := &storage.File{
+			ProjectID:   project.ID,
+			FilePath:    "nested.go",
+			PackageName: "test",
+			ContentHash: hash,
+			ModTime:     time.Now(),
+			SizeBytes:   100,
+		}
+		err = tx.UpsertFile(ctx, file)
+		if err != nil {
+			t.Fatalf("UpsertFile in tx failed: %v", err)
+		}
+
+		// Rollback entire transaction
+		err = tx.Rollback()
+		if err != nil {
+			t.Fatalf("Rollback failed: %v", err)
+		}
+
+		// Verify both project and file are not persisted
+		_, err = store.GetProject(ctx, "/test/nested-rollback")
+		if err != storage.ErrNotFound {
+			t.Errorf("Expected ErrNotFound for project after rollback, got: %v", err)
+		}
+	})
+
+	t.Run("Document expected behavior for future savepoint support", func(t *testing.T) {
+		// This test documents the expected behavior if savepoints are added in the future
+		// Currently, nested transactions are not supported, but the architecture supports adding them
+
+		tx, err := store.BeginTx(ctx)
+		if err != nil {
+			t.Fatalf("BeginTx failed: %v", err)
+		}
+		defer tx.Rollback()
+
+		// Create project in outer transaction
+		project := &storage.Project{
+			RootPath:     "/test/savepoint-future",
+			ModuleName:   "github.com/test/savepoint",
+			GoVersion:    "1.23",
+			IndexVersion: "1.0.0",
+		}
+		err = tx.CreateProject(ctx, project)
+		if err != nil {
+			t.Fatalf("CreateProject failed: %v", err)
+		}
+
+		// If savepoints were supported, we would:
+		// 1. Call nestedTx, err := tx.BeginTx(ctx) - would create SAVEPOINT
+		// 2. Do some work in nested transaction
+		// 3. nestedTx.Rollback() would ROLLBACK TO SAVEPOINT
+		// 4. Outer transaction would still have the project
+
+		// For now, verify nested transactions are properly rejected
+		_, err = tx.BeginTx(ctx)
+		if err == nil {
+			t.Error("Expected nested transaction to fail (savepoints not yet implemented)")
+		}
+	})
+}

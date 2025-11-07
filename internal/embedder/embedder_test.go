@@ -2,6 +2,7 @@ package embedder
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -436,4 +437,177 @@ func TestNormalizeVector(t *testing.T) {
 			}
 		})
 	}
+}
+
+// T030: Integration test for LRU cache eviction behavior
+func TestT030_LRUCacheEviction(t *testing.T) {
+	t.Run("LRU evicts least recently used entry when at capacity", func(t *testing.T) {
+		// Create cache with capacity of 3
+		cache := NewCache(3)
+
+		// Fill cache to capacity
+		cache.Set("hash1", &Embedding{Hash: "hash1", Vector: []float32{1.0}})
+		cache.Set("hash2", &Embedding{Hash: "hash2", Vector: []float32{2.0}})
+		cache.Set("hash3", &Embedding{Hash: "hash3", Vector: []float32{3.0}})
+
+		if cache.Size() != 3 {
+			t.Errorf("cache size = %d, want 3", cache.Size())
+		}
+
+		// Add fourth entry - should evict least recently used (hash1)
+		cache.Set("hash4", &Embedding{Hash: "hash4", Vector: []float32{4.0}})
+
+		// hash1 should be evicted
+		if _, ok := cache.Get("hash1"); ok {
+			t.Error("hash1 should have been evicted but is still in cache")
+		}
+
+		// hash4 should be present
+		if _, ok := cache.Get("hash4"); !ok {
+			t.Error("hash4 should be in cache")
+		}
+
+		// Cache size should remain at capacity
+		if cache.Size() != 3 {
+			t.Errorf("cache size = %d, want 3 after eviction", cache.Size())
+		}
+	})
+
+	t.Run("accessing entry makes it most recently used", func(t *testing.T) {
+		cache := NewCache(3)
+
+		// Fill cache
+		cache.Set("hash1", &Embedding{Hash: "hash1", Vector: []float32{1.0}})
+		cache.Set("hash2", &Embedding{Hash: "hash2", Vector: []float32{2.0}})
+		cache.Set("hash3", &Embedding{Hash: "hash3", Vector: []float32{3.0}})
+
+		// Access hash1 to make it most recently used
+		if _, ok := cache.Get("hash1"); !ok {
+			t.Fatal("hash1 should be in cache")
+		}
+
+		// Add new entry - should evict hash2 (now least recently used)
+		cache.Set("hash4", &Embedding{Hash: "hash4", Vector: []float32{4.0}})
+
+		// hash1 should still be present (was accessed)
+		if _, ok := cache.Get("hash1"); !ok {
+			t.Error("hash1 should still be in cache after being accessed")
+		}
+
+		// hash2 should be evicted
+		if _, ok := cache.Get("hash2"); ok {
+			t.Error("hash2 should have been evicted")
+		}
+	})
+
+	t.Run("cache maintains hot entries", func(t *testing.T) {
+		cache := NewCache(5)
+
+		// Add entries
+		for i := 1; i <= 5; i++ {
+			hash := ComputeHash(fmt.Sprintf("text%d", i))
+			cache.Set(hash, &Embedding{
+				Hash:   hash,
+				Vector: []float32{float32(i)},
+			})
+		}
+
+		// Frequently access entries 1, 2, 3
+		hotHashes := []string{
+			ComputeHash("text1"),
+			ComputeHash("text2"),
+			ComputeHash("text3"),
+		}
+
+		for i := 0; i < 10; i++ {
+			for _, hash := range hotHashes {
+				cache.Get(hash)
+			}
+		}
+
+		// Add 3 new entries - should evict cold entries (4, 5, and one hot entry)
+		for i := 6; i <= 8; i++ {
+			hash := ComputeHash(fmt.Sprintf("text%d", i))
+			cache.Set(hash, &Embedding{
+				Hash:   hash,
+				Vector: []float32{float32(i)},
+			})
+		}
+
+		// At least 2 of the frequently accessed entries should remain
+		hotCount := 0
+		for _, hash := range hotHashes {
+			if _, ok := cache.Get(hash); ok {
+				hotCount++
+			}
+		}
+
+		if hotCount < 2 {
+			t.Errorf("expected at least 2 hot entries to remain, got %d", hotCount)
+		}
+	})
+
+	t.Run("cache size never exceeds maxEntries", func(t *testing.T) {
+		maxEntries := 10
+		cache := NewCache(maxEntries)
+
+		// Add many more entries than capacity
+		for i := 0; i < maxEntries*3; i++ {
+			hash := ComputeHash(fmt.Sprintf("text%d", i))
+			cache.Set(hash, &Embedding{
+				Hash:   hash,
+				Vector: []float32{float32(i)},
+			})
+
+			// Verify size never exceeds capacity
+			if cache.Size() > maxEntries {
+				t.Errorf("cache size %d exceeds max capacity %d", cache.Size(), maxEntries)
+			}
+		}
+
+		// Final size should be at capacity
+		if cache.Size() != maxEntries {
+			t.Errorf("final cache size = %d, want %d", cache.Size(), maxEntries)
+		}
+	})
+
+	t.Run("eviction with concurrent access", func(t *testing.T) {
+		cache := NewCache(50)
+		done := make(chan bool)
+
+		// Multiple goroutines adding and accessing entries
+		for g := 0; g < 5; g++ {
+			go func(id int) {
+				for i := 0; i < 100; i++ {
+					hash := ComputeHash(fmt.Sprintf("goroutine%d_text%d", id, i))
+					cache.Set(hash, &Embedding{
+						Hash:   hash,
+						Vector: []float32{float32(id), float32(i)},
+					})
+
+					// Sometimes access existing entries
+					if i%3 == 0 && i > 0 {
+						oldHash := ComputeHash(fmt.Sprintf("goroutine%d_text%d", id, i-1))
+						cache.Get(oldHash)
+					}
+				}
+				done <- true
+			}(g)
+		}
+
+		// Wait for all goroutines
+		for i := 0; i < 5; i++ {
+			<-done
+		}
+
+		// Cache should be at capacity, not exceed it
+		if cache.Size() > 50 {
+			t.Errorf("cache size %d exceeds capacity 50 after concurrent access", cache.Size())
+		}
+
+		// Cache should have some entries
+		if cache.Size() == 0 {
+			t.Error("cache is empty after concurrent access")
+		}
+	})
 }

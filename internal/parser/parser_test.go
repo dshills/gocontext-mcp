@@ -359,3 +359,331 @@ func main() {}
 	require.NoError(t, err)
 	assert.Empty(t, result.Imports)
 }
+
+// T086: Regression test for parser extracting partial results on syntax errors
+// Verifies that ParseFile continues after encountering syntax errors
+// Implementation: internal/parser/parser.go (lines 37-68)
+func TestParseFile_PartialResultsOnSyntaxError(t *testing.T) {
+	t.Run("extract package name despite syntax errors", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "partial.go")
+
+		// Valid package, valid import, but syntax error in function
+		content := `package mypackage
+
+import "fmt"
+
+func BrokenFunc( {
+	// Missing closing parenthesis
+	fmt.Println("broken")
+}
+
+// This function is after the error
+func ValidFunc() {
+	fmt.Println("valid")
+}
+`
+
+		err := os.WriteFile(testFile, []byte(content), 0644)
+		require.NoError(t, err)
+
+		p := New()
+		result, err := p.ParseFile(testFile)
+
+		// Parser does not return error, but records it in result
+		require.NoError(t, err, "ParseFile should not return error for syntax errors")
+
+		// Verify error was recorded
+		assert.NotEmpty(t, result.Errors, "Syntax error should be recorded")
+		assert.Contains(t, result.Errors[0].Message, "syntax error")
+
+		// Partial AST extraction: package name should be extracted
+		assert.Equal(t, "mypackage", result.PackageName, "Package name should be extracted")
+
+		// Implementation detail: parser.go:39-43
+		// Syntax errors are recorded but processing continues with partial AST
+	})
+
+	t.Run("extract valid imports despite syntax errors", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "imports_partial.go")
+
+		content := `package testpkg
+
+import (
+	"fmt"
+	"strings"
+	"os"
+)
+
+func Broken( {
+	// Syntax error
+}
+`
+
+		err := os.WriteFile(testFile, []byte(content), 0644)
+		require.NoError(t, err)
+
+		p := New()
+		result, err := p.ParseFile(testFile)
+
+		require.NoError(t, err)
+		assert.NotEmpty(t, result.Errors, "Should have syntax error")
+
+		// Imports should still be extracted
+		assert.Len(t, result.Imports, 3, "All imports should be extracted")
+
+		importPaths := make(map[string]bool)
+		for _, imp := range result.Imports {
+			importPaths[imp.Path] = true
+		}
+		assert.True(t, importPaths["fmt"])
+		assert.True(t, importPaths["strings"])
+		assert.True(t, importPaths["os"])
+
+		// Implementation: parser.go:52-53 extracts imports from partial AST
+	})
+
+	t.Run("extract valid symbols before error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "symbols_partial.go")
+
+		content := `package testpkg
+
+// ValidStruct should be extracted
+type ValidStruct struct {
+	ID int
+}
+
+// ValidFunc should be extracted
+func ValidFunc() {}
+
+func BrokenFunc( {
+	// Syntax error here
+}
+
+// Note: Symbols after error may not be extracted depending on parser behavior
+`
+
+		err := os.WriteFile(testFile, []byte(content), 0644)
+		require.NoError(t, err)
+
+		p := New()
+		result, err := p.ParseFile(testFile)
+
+		require.NoError(t, err)
+		assert.NotEmpty(t, result.Errors, "Should have syntax error")
+
+		// Valid symbols before error should be extracted
+		symbolNames := make(map[string]bool)
+		for _, sym := range result.Symbols {
+			symbolNames[sym.Name] = true
+		}
+
+		// These symbols are before the syntax error and should be extracted
+		assert.True(t, symbolNames["ValidStruct"], "Struct before error should be extracted")
+		assert.True(t, symbolNames["ValidFunc"], "Function before error should be extracted")
+
+		// Implementation: parser.go:55-66 uses AST traversal on partial AST
+		// ast.Inspect walks the partial tree and extracts valid nodes
+	})
+
+	t.Run("multiple syntax errors recorded", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "multiple_errors.go")
+
+		// Multiple syntax errors
+		content := `package testpkg
+
+func First( {
+}
+
+func Second( {
+}
+`
+
+		err := os.WriteFile(testFile, []byte(content), 0644)
+		require.NoError(t, err)
+
+		p := New()
+		result, err := p.ParseFile(testFile)
+
+		require.NoError(t, err, "ParseFile should not return error")
+
+		// Parser records errors but continues
+		assert.NotEmpty(t, result.Errors, "Errors should be recorded")
+
+		// Package name still extracted
+		assert.Equal(t, "testpkg", result.PackageName)
+
+		// Implementation: parser.go:40 records error via result.AddError
+	})
+
+	t.Run("partial AST inspection continues", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "ast_partial.go")
+
+		content := `package testpkg
+
+type ValidType struct {
+	Name string
+}
+
+func Broken( {
+}
+`
+
+		err := os.WriteFile(testFile, []byte(content), 0644)
+		require.NoError(t, err)
+
+		p := New()
+		result, err := p.ParseFile(testFile)
+
+		require.NoError(t, err)
+		assert.NotEmpty(t, result.Errors)
+
+		// AST inspection at parser.go:64 should process available nodes
+		// Even with syntax errors, valid declarations are found
+
+		var foundValidType bool
+		for _, sym := range result.Symbols {
+			if sym.Name == "ValidType" {
+				foundValidType = true
+				assert.Equal(t, types.KindStruct, sym.Kind)
+			}
+		}
+
+		assert.True(t, foundValidType, "Valid type declaration should be found in partial AST")
+	})
+
+	t.Run("error details are preserved", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "error_details.go")
+
+		content := `package testpkg
+
+func Invalid( {
+	// Error on line 3
+}
+`
+
+		err := os.WriteFile(testFile, []byte(content), 0644)
+		require.NoError(t, err)
+
+		p := New()
+		result, err := p.ParseFile(testFile)
+
+		require.NoError(t, err)
+		require.NotEmpty(t, result.Errors)
+
+		// Verify error information is recorded
+		parseError := result.Errors[0]
+		assert.Equal(t, testFile, parseError.File, "Error file should be set")
+		assert.Contains(t, parseError.Message, "syntax error", "Error message should describe the issue")
+
+		// Line/column may be 0 if not available from parser
+		// Implementation: parser.go:40 passes 0, 0 for line/column
+	})
+}
+
+// T086b: Test that parser handles various syntax error scenarios
+func TestParseFile_SyntaxErrorScenarios(t *testing.T) {
+	tests := []struct {
+		name             string
+		content          string
+		expectPackage    string
+		expectSymbols    []string // Symbols that should be extracted
+		expectImportPath string   // At least one import that should be extracted
+	}{
+		{
+			name: "missing closing brace",
+			content: `package test
+
+type Config struct {
+	Value string
+// Missing closing brace
+
+func Valid() {}
+`,
+			expectPackage: "test",
+			expectSymbols: []string{"Config"},
+		},
+		{
+			name: "invalid type declaration",
+			content: `package mytest
+
+import "fmt"
+
+type Invalid struct {
+	Bad syntax here
+}
+
+type Valid struct {
+	Good string
+}
+`,
+			expectPackage:    "mytest",
+			expectImportPath: "fmt",
+		},
+		{
+			name: "unclosed string literal",
+			content: `package functest
+
+const BrokenString = "unclosed
+
+func ValidFunc() {
+	println("ok")
+}
+`,
+			expectPackage: "functest",
+			expectSymbols: []string{"ValidFunc"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			testFile := filepath.Join(tmpDir, "test.go")
+
+			err := os.WriteFile(testFile, []byte(tt.content), 0644)
+			require.NoError(t, err)
+
+			p := New()
+			result, err := p.ParseFile(testFile)
+
+			// Should not return error
+			require.NoError(t, err)
+
+			// Should record the syntax error
+			assert.NotEmpty(t, result.Errors, "Syntax error should be recorded")
+
+			// Package name should be extracted
+			if tt.expectPackage != "" {
+				assert.Equal(t, tt.expectPackage, result.PackageName,
+					"Package name should be extracted despite syntax errors")
+			}
+
+			// Expected symbols should be extracted
+			if len(tt.expectSymbols) > 0 {
+				symbolNames := make(map[string]bool)
+				for _, sym := range result.Symbols {
+					symbolNames[sym.Name] = true
+				}
+				for _, expectedSym := range tt.expectSymbols {
+					assert.True(t, symbolNames[expectedSym],
+						"Symbol %s should be extracted from partial AST", expectedSym)
+				}
+			}
+
+			// Expected import should be extracted
+			if tt.expectImportPath != "" {
+				importPaths := make(map[string]bool)
+				for _, imp := range result.Imports {
+					importPaths[imp.Path] = true
+				}
+				assert.True(t, importPaths[tt.expectImportPath],
+					"Import %s should be extracted from partial AST", tt.expectImportPath)
+			}
+		})
+	}
+}

@@ -50,10 +50,10 @@ type JinaProvider struct {
 // NewJinaProvider creates a new Jina AI embedder
 func NewJinaProvider(apiKey string, cache *Cache) (*JinaProvider, error) {
 	if apiKey == "" {
-		apiKey = os.Getenv("JINA_API_KEY")
+		apiKey = os.Getenv(EnvJinaAPIKey)
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("%w: JINA_API_KEY not set", ErrNoProviderEnabled)
+		return nil, fmt.Errorf("%w: %s not set", ErrNoProviderEnabled, EnvJinaAPIKey)
 	}
 
 	return &JinaProvider{
@@ -221,10 +221,10 @@ type OpenAIProvider struct {
 // NewOpenAIProvider creates a new OpenAI embedder
 func NewOpenAIProvider(apiKey string, cache *Cache) (*OpenAIProvider, error) {
 	if apiKey == "" {
-		apiKey = os.Getenv("OPENAI_API_KEY")
+		apiKey = os.Getenv(EnvOpenAIAPIKey)
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("%w: OPENAI_API_KEY not set", ErrNoProviderEnabled)
+		return nil, fmt.Errorf("%w: %s not set", ErrNoProviderEnabled, EnvOpenAIAPIKey)
 	}
 
 	return &OpenAIProvider{

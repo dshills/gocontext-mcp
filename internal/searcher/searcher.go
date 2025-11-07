@@ -191,7 +191,7 @@ func (s *Searcher) hybridSearch(ctx context.Context, req SearchRequest) (*Search
 
 	// Check for errors (allow one to fail)
 	if vectorRes.err != nil && textRes.err != nil {
-		return nil, fmt.Errorf("both searches failed: vector=%v, text=%v", vectorRes.err, textRes.err)
+		return nil, fmt.Errorf("both searches failed: vector=%w, text=%v", vectorRes.err, textRes.err)
 	}
 
 	// Apply RRF and fetch results

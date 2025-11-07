@@ -1,6 +1,7 @@
 package sample
 
 // This file has intentional syntax errors for testing error handling
+// Note: This file will not compile but should still be parsed for testing
 
 func BrokenFunction( {
 	// Missing closing parenthesis in parameters

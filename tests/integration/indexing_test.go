@@ -232,19 +232,32 @@ func (s *IndexingTestSuite) TestErrorHandling() {
 	stats, err := s.indexer.IndexProject(s.ctx, s.fixturesDir, config)
 	s.Require().NoError(err, "indexing should succeed despite parse errors")
 
-	// Should have some failed files (sample_error.go)
-	s.Greater(stats.FilesFailed, 0, "should have failed files")
-	s.NotEmpty(stats.ErrorMessages, "should record error messages")
-	s.T().Logf("Failed files: %d, Errors: %v", stats.FilesFailed, stats.ErrorMessages)
+	// With improved parser (FR-021), files with syntax errors are still indexed
+	// They extract partial symbols and are stored with ParseError field set
+	// The parser continues processing instead of failing completely
+	s.Greater(stats.FilesIndexed, 0, "should index files including those with errors")
+	s.Greater(stats.SymbolsExtracted, 0, "should extract symbols from valid and partial files")
 
-	// Should still index valid files
-	s.Greater(stats.FilesIndexed, 0, "should index valid files")
-	s.Greater(stats.SymbolsExtracted, 0, "should extract symbols from valid files")
-
-	// Verify project was still created successfully
+	// Verify project was created successfully
 	project, err := s.storage.GetProject(s.ctx, s.fixturesDir)
 	s.NoError(err)
 	s.NotNil(project)
+
+	// Verify that files with parse errors have the ParseError field set
+	files, err := s.storage.ListFiles(s.ctx, project.ID)
+	s.NoError(err)
+
+	// Find the error file and verify it was stored with error info
+	foundErrorFile := false
+	for _, file := range files {
+		if file.ParseError != nil {
+			foundErrorFile = true
+			s.T().Logf("File with parse error: %s, Error: %s", file.FilePath, *file.ParseError)
+			break
+		}
+	}
+	// sample_error.go should be indexed with ParseError set (graceful handling)
+	s.True(foundErrorFile, "should have at least one file with ParseError set")
 }
 
 // TestEmptyDirectory tests indexing an empty directory
