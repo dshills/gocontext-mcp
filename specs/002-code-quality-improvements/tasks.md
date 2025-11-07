@@ -30,8 +30,8 @@ Single project structure at repository root:
 - [X] T001 Add github.com/Masterminds/semver/v3@v3.2.1 to go.mod for semantic versioning
 - [X] T002 Add github.com/hashicorp/golang-lru/v2@v2.0.7 to go.mod for LRU cache implementation
 - [X] T003 Verify golang.org/x/crypto/bcrypt is available (already indirect dependency)
-- [ ] T004 Run golangci-lint run to establish baseline (should show existing issues)
-- [ ] T005 [P] Create backup of critical files before modifications (internal/storage/, internal/embedder/, internal/indexer/)
+- [X] T004 Run golangci-lint run to establish baseline (should show existing issues)
+- [X] T005 [P] Create backup of critical files before modifications (internal/storage/, internal/embedder/, internal/indexer/)
 
 ---
 
@@ -43,7 +43,7 @@ Single project structure at repository root:
 
 - [X] T006 Create IndexLock type with TryAcquire/Release methods using atomic.Int32 in internal/indexer/lock.go
 - [X] T007 [P] Define querier interface in internal/storage/sqlite.go (QueryRowContext, QueryContext, ExecContext)
-- [ ] T008 [P] Create RetryConfig struct and retryWithBackoff function in internal/embedder/retry.go
+- [X] T008 [P] Create RetryConfig struct and retryWithBackoff function in internal/embedder/retry.go
 - [X] T009 [P] Precompile FTS5 regex patterns at package level in internal/storage/vector_ops.go
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
@@ -119,9 +119,9 @@ Single project structure at repository root:
 - [X] T035 [US2] Verify sorting maintains descending score order
 
 **Issue #6: Implement Query Caching (FR-006)**
-- [ ] T036 [US2] Implement checkCache to actually retrieve cached results in internal/searcher/searcher.go:295
-- [ ] T037 [US2] Implement storeInCache to save SearchResponse with TTL in internal/searcher/searcher.go:295
-- [ ] T038 [US2] Use computeQueryHash for cache key generation
+- [X] T036 [US2] Implement checkCache to actually retrieve cached results in internal/searcher/searcher.go:295
+- [X] T037 [US2] Implement storeInCache to save SearchResponse with TTL in internal/searcher/searcher.go:295
+- [X] T038 [US2] Use computeQueryHash for cache key generation
 
 **Issue #9, #20, #24, #25, #26: LRU Cache Implementation (FR-009)**
 - [X] T039 [US2] Replace simple map with lru.Cache in internal/embedder/embedder.go:65
@@ -139,8 +139,8 @@ Single project structure at repository root:
 - [X] T047 [US2] Add select with ctx.Done() to runTextSearch channel send in internal/searcher/searcher.go:141
 
 **Issue #11: Embedding Cleanup (FR-011)**
-- [ ] T048 [US2] Add cleanup logic for orphaned chunks when embedding fails in internal/indexer/indexer.go:193
-- [ ] T049 [US2] Either move embedding generation before commit OR implement rollback mechanism
+- [X] T048 [US2] Add cleanup logic for orphaned chunks when embedding fails in internal/indexer/indexer.go:193
+- [X] T049 [US2] Either move embedding generation before commit OR implement rollback mechanism
 
 **Validation**
 - [X] T050 [US2] Run all US2 regression tests and benchmarks
@@ -181,9 +181,9 @@ Single project structure at repository root:
 
 **Issue #11, #14, #19: Transaction Isolation (FR-014)**
 - [X] T066 [US3] Refactor GetProject to internal getProjectWithQuerier accepting querier in internal/storage/sqlite.go:150
-- [ ] T067 [P] [US3] Refactor GetFileByID to internal getFileByIDWithQuerier accepting querier in internal/storage/sqlite.go
-- [ ] T068 [P] [US3] Refactor ListFiles to internal listFilesWithQuerier accepting querier in internal/storage/sqlite.go
-- [ ] T069 [P] [US3] Refactor SearchSymbols to internal searchSymbolsWithQuerier accepting querier in internal/storage/sqlite.go:306
+- [X] T067 [P] [US3] Refactor GetFileByID to internal getFileByIDWithQuerier accepting querier in internal/storage/sqlite.go
+- [X] T068 [P] [US3] Refactor ListFiles to internal listFilesWithQuerier accepting querier in internal/storage/sqlite.go
+- [X] T069 [P] [US3] Refactor SearchSymbols to internal searchSymbolsWithQuerier accepting querier in internal/storage/sqlite.go:306
 - [X] T070 [P] [US3] Refactor GetStatus to internal getStatusWithQuerier accepting querier in internal/storage/sqlite.go
 - [X] T071 [US3] Update public Storage methods to call internal methods with s.db
 - [X] T072 [US3] Update sqliteTx methods to call internal methods with t.tx in internal/storage/sqlite.go:498,643
@@ -195,10 +195,10 @@ Single project structure at repository root:
 - [X] T076 [US3] Replace check-then-act with INSERT ... ON CONFLICT DO UPDATE in upsertChunkWithQuerier in internal/storage/sqlite.go
 
 **Issue #12: Fix ORDER BY References (FR-016)**
-- [ ] T077 [US3] Fix SearchSymbols ORDER BY to use valid column or ranking function in internal/storage/sqlite.go:306
+- [X] T077 [US3] Fix SearchSymbols ORDER BY to use valid column or ranking function in internal/storage/sqlite.go:306
 
 **Issue #15: Nested Transaction Handling**
-- [ ] T078 [US3] Ensure sqliteTx.BeginTx behavior is consistent (error or savepoint) in internal/storage/sqlite.go:799
+- [X] T078 [US3] Ensure sqliteTx.BeginTx behavior is consistent (error or savepoint) in internal/storage/sqlite.go:799
 
 **Validation**
 - [X] T079 [US3] Run all US3 regression tests for migrations and transactions
@@ -241,17 +241,17 @@ Single project structure at repository root:
 - [X] T095 [US4] Pass same embedder instance to searcher constructor
 
 **Issue #29: Precompile Regex Patterns (FR-020)**
-- [ ] T096 [US4] Move regex compilation to package-level vars in internal/mcp/tools.go:370
-- [ ] T097 [US4] Reuse precompiled patterns in sanitizeQueryForFTS
+- [X] T096 [US4] Move regex compilation to package-level vars in internal/mcp/tools.go:370
+- [X] T097 [US4] Reuse precompiled patterns in sanitizeQueryForFTS
 
 **Issue #30: Parser Partial Results (FR-021)**
-- [ ] T098 [US4] Remove early return after AddError in ParseFile in internal/parser/parser.go:35
-- [ ] T099 [US4] Continue processing partial AST even when err != nil
-- [ ] T100 [US4] Extract package name, imports, valid symbols from partial AST
+- [X] T098 [US4] Remove early return after AddError in ParseFile in internal/parser/parser.go:35
+- [X] T099 [US4] Continue processing partial AST even when err != nil
+- [X] T100 [US4] Extract package name, imports, valid symbols from partial AST
 
 **Issue #22: Immutable Cache Returns (FR-022)**
-- [ ] T101 [US4] Update Cache.Get to return deep copy of Embedding in internal/embedder/embedder.go:67
-- [ ] T102 [US4] Ensure Vector slice is newly allocated: append([]float32{}, cached.Vector...)
+- [X] T101 [US4] Update Cache.Get to return deep copy of Embedding in internal/embedder/embedder.go:67
+- [X] T102 [US4] Ensure Vector slice is newly allocated: append([]float32{}, cached.Vector...)
 
 **Validation**
 - [X] T103 [US4] Run all US4 regression tests
@@ -278,8 +278,8 @@ Single project structure at repository root:
 ### Implementation for User Story 5
 
 **Issue #18, #19: Secure Token Generation and Validation (FR-023, FR-024)**
-- [ ] T110 [P] [US5] Replace SHA-256 with crypto/rand for token generation in tests/testdata/fixtures/authentication.go:66
-- [ ] T111 [P] [US5] Implement proper token validation against persistent storage in tests/testdata/fixtures/authentication.go:82
+- [X] T110 [P] [US5] Replace SHA-256 with crypto/rand for token generation in tests/testdata/fixtures/authentication.go:66
+- [X] T111 [P] [US5] Implement proper token validation against persistent storage in tests/testdata/fixtures/authentication.go:82
 
 **Style and Consistency Fixes**
 - [ ] T112 [P] [US5] Fix all SQL ORDER BY column references across codebase
