@@ -107,3 +107,4 @@ secrets/
 credentials/
 tests/e2e/
 gocontext
+.mcp.json
